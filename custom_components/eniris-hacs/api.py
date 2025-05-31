@@ -532,4 +532,3 @@ class EnirisHacsApiClient:
         """Close the client session."""
         await self._session.close()
 
-l
