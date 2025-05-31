@@ -297,7 +297,14 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         else:
             self._attr_native_value = latest_data.get(self._value_key)
 
-        _LOGGER.debug("Sensor %s updated native_value to: %s", self.unique_id, self._attr_native_value)
+        # Set the last update time if we have a timestamp
+        if "timestamp" in latest_data:
+            self._attr_last_updated = latest_data["timestamp"]
+
+        _LOGGER.debug("Sensor %s updated native_value to: %s at %s", 
+                     self.unique_id, 
+                     self._attr_native_value,
+                     self._attr_last_updated)
 
 
     @callback

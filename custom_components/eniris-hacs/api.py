@@ -241,25 +241,29 @@ class EnirisHacsApiClient:
                 _LOGGER.warning("No series data in telemetry response for device %s", node_id)
                 return {}
 
-            # Get the latest values (last entry in the values array)
+            # Get the values array
             values = series[0].get("values", [])
             if not values:
                 _LOGGER.warning("No values in telemetry response for device %s", node_id)
                 return {}
 
-            # Get the latest value
-            latest_values = values[-1]
-            columns = series[0].get("columns", [])
+            # Get the latest value and its timestamp
+            latest_value = values[-1]
+            timestamp = latest_value[0]  # First element is timestamp in milliseconds
+            field_values = latest_value[1:]  # Rest of the elements are the field values
 
-            # Create a dictionary of field names to values
+            # Create a dictionary mapping field names to their values
             result = {}
-            for i, column in enumerate(columns):
-                if column != "time":  # Skip the time column
-                    result[column] = latest_values[i]
-
+            for i, field in enumerate(fields):
+                if i < len(field_values):
+                    result[field] = field_values[i]
+            
+            # Add the timestamp in UTC
+            result["timestamp"] = datetime.fromtimestamp(timestamp / 1000, timezone.utc)
+            
             return result
 
-        except EnirisHacsApiError as e:
+        except Exception as e:
             _LOGGER.error("Error fetching telemetry data for device %s: %s", node_id, e)
             return {}
 
