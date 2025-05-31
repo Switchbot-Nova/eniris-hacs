@@ -303,8 +303,53 @@ class EnirisHacsApiClient:
             _LOGGER.debug("Telemetry data for device %s: %s", node_id, result)
             return result
 
-        except Exception as e:
+        except EnirisHacsApiError as e:
             _LOGGER.error("Error fetching telemetry data for device %s: %s", node_id, e)
+            # If it's an auth error, it might mean the access token expired mid-flight.
+            # Retry getting an access token once.
+            if isinstance(e, EnirisHacsAuthError):
+                _LOGGER.info("Auth error during telemetry fetch, attempting to refresh access token once.")
+                self._access_token = None  # Clear current access token to force refresh
+                access_token = await self.ensure_access_token()  # Retry getting token
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
+                # Retry fetching telemetry once
+                try:
+                    response = await self._request(
+                        "POST",
+                        "https://api.eniris.be/v1/telemetry/query",
+                        headers=headers,
+                        data=queries
+                    )
+                    if response and isinstance(response, list) and len(response) > 0:
+                        _LOGGER.info("Successfully fetched telemetry data on retry for device %s", node_id)
+                        # Process the response as before
+                        result = {}
+                        latest_timestamp = None
+                        for statement in response:
+                            if not statement.get("series"):
+                                continue
+                            for series in statement["series"]:
+                                if not series.get("values"):
+                                    continue
+                                latest_value = series["values"][-1]
+                                timestamp = latest_value[0]
+                                if latest_timestamp is None or timestamp > latest_timestamp:
+                                    latest_timestamp = timestamp
+                                    columns = series.get("columns", [])
+                                    for i, value in enumerate(latest_value[1:], 1):
+                                        if i < len(columns):
+                                            field_name = columns[i]
+                                            if field_name.startswith("sum_"):
+                                                field_name = field_name[4:]
+                                            result[field_name] = value
+                        if latest_timestamp:
+                            result["timestamp"] = datetime.fromtimestamp(int(latest_timestamp) / 1000, timezone.utc)
+                        return result
+                except Exception as retry_error:
+                    _LOGGER.error("Still failed to fetch telemetry after token refresh: %s", retry_error)
             return {}
 
     async def get_device_latest_data(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -339,8 +384,10 @@ class EnirisHacsApiClient:
         """Get devices and process them for hierarchy and supported types."""
         raw_devices = await self.get_devices()
         if not raw_devices:
+            _LOGGER.error("No devices returned from API")
             return {}
 
+        _LOGGER.debug("Raw devices from API: %s", raw_devices)
         devices_by_node_id: Dict[str, Dict[str, Any]] = {}
         processed_devices: Dict[str, Dict[str, Any]] = {}
 
@@ -354,13 +401,16 @@ class EnirisHacsApiClient:
             
             device_data["_processed_children"] = [] # To store actual child device data
             devices_by_node_id[node_id] = device_data
+            _LOGGER.debug("Indexed device %s with type %s", node_id, properties.get("nodeType"))
 
         # Second pass: build hierarchy and identify primary devices
         for node_id, device_data in devices_by_node_id.items():
             properties = device_data.get("properties", {})
             node_type = properties.get("nodeType")
+            _LOGGER.debug("Processing device %s of type %s", node_id, node_type)
 
             if node_type not in SUPPORTED_NODE_TYPES:
+                _LOGGER.debug("Skipping unsupported device type %s for device %s", node_type, node_id)
                 continue
 
             # Populate children for this device
@@ -369,6 +419,7 @@ class EnirisHacsApiClient:
                 if child_node_id in devices_by_node_id:
                     child_device_data = devices_by_node_id[child_node_id]
                     device_data["_processed_children"].append(child_device_data)
+                    _LOGGER.debug("Added child device %s to parent %s", child_node_id, node_id)
 
             # Determine if this device should be a primary device
             is_primary = False
@@ -376,6 +427,7 @@ class EnirisHacsApiClient:
             # Always make hybrid inverters primary devices
             if node_type == DEVICE_TYPE_HYBRID_INVERTER:
                 is_primary = True
+                _LOGGER.debug("Device %s is primary because it's a hybrid inverter", node_id)
             # For other device types, check if they're not children of a hybrid inverter
             else:
                 parent_ids = properties.get("nodeParentsIds", [])
@@ -384,21 +436,31 @@ class EnirisHacsApiClient:
                     parent_device = devices_by_node_id.get(parent_id)
                     if parent_device and parent_device.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
                         is_child_of_hybrid = True
+                        _LOGGER.debug("Device %s is a child of hybrid inverter %s", node_id, parent_id)
                         break
                 is_primary = not is_child_of_hybrid
+                if is_primary:
+                    _LOGGER.debug("Device %s is primary because it's not a child of a hybrid inverter", node_id)
 
             if is_primary:
-                # Get latest telemetry data for this device
-                latest_data = await self.get_device_latest_data(device_data)
-                device_data["_latest_data"] = latest_data
+                try:
+                    # Get latest telemetry data for this device
+                    latest_data = await self.get_device_latest_data(device_data)
+                    device_data["_latest_data"] = latest_data
+                    _LOGGER.debug("Got latest data for device %s: %s", node_id, latest_data)
 
-                # Get latest telemetry data for children
-                for child_device in device_data["_processed_children"]:
-                    child_latest_data = await self.get_device_latest_data(child_device)
-                    child_device["_latest_data"] = child_latest_data
+                    # Get latest telemetry data for children
+                    for child_device in device_data["_processed_children"]:
+                        child_latest_data = await self.get_device_latest_data(child_device)
+                        child_device["_latest_data"] = child_latest_data
+                        _LOGGER.debug("Got latest data for child device %s: %s", 
+                                    child_device.get("properties", {}).get("nodeId"), 
+                                    child_latest_data)
 
-                _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
-                processed_devices[node_id] = device_data
+                    _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
+                    processed_devices[node_id] = device_data
+                except Exception as e:
+                    _LOGGER.error("Error getting latest data for device %s: %s", node_id, e)
 
         _LOGGER.info("Processed %s primary devices for Home Assistant.", len(processed_devices))
         for node_id, dev_data in processed_devices.items():
