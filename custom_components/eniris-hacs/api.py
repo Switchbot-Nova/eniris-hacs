@@ -302,13 +302,10 @@ class EnirisHacsApiClient:
                 if isinstance(latest_timestamp, int):
                     result["timestamp"] = datetime.fromtimestamp(latest_timestamp / 1000, timezone.utc)
                 elif isinstance(latest_timestamp, str):
-                    # Remove trailing 'Z' if present and parse
                     ts = latest_timestamp.rstrip('Z')
                     try:
-                        # Handle microseconds if present
                         result["timestamp"] = datetime.fromisoformat(ts)
                     except Exception:
-                        # Fallback: parse without microseconds
                         result["timestamp"] = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
 
             _LOGGER.debug("Telemetry data for device %s: %s", node_id, result)
@@ -361,13 +358,10 @@ class EnirisHacsApiClient:
                             if isinstance(latest_timestamp, int):
                                 result["timestamp"] = datetime.fromtimestamp(latest_timestamp / 1000, timezone.utc)
                             elif isinstance(latest_timestamp, str):
-                                # Remove trailing 'Z' if present and parse
                                 ts = latest_timestamp.rstrip('Z')
                                 try:
-                                    # Handle microseconds if present
                                     result["timestamp"] = datetime.fromisoformat(ts)
                                 except Exception:
-                                    # Fallback: parse without microseconds
                                     result["timestamp"] = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
                         return result
                 except Exception as retry_error:
