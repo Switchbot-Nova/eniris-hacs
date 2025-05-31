@@ -175,90 +175,50 @@ async def async_setup_entry(
         # 1b. Add Import/Export Power sensors for all power meters, PV, and battery
         if node_type in [DEVICE_TYPE_POWER_METER, DEVICE_TYPE_SOLAR_OPTIMIZER, DEVICE_TYPE_BATTERY]:
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in IMPORT_EXPORT_POWER_SENSORS:
-                # Only add if actualPowerTot_W is present
-                value = latest_data.get("actualPowerTot_W")
-                has_data = False
-                if isinstance(value, dict):
-                    has_data = any(v is not None for v in value.values())
-                elif value is not None:
-                    has_data = True
-                if has_data:
+                entities_to_add.append(
+                    EnirisHacsSensor(
+                        coordinator,
+                        device_data,
+                        entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                        value_extractor=None # We'll handle in the sensor class
+                    )
+                )
+        # 1c. Add Charging/Discharging Power sensors for all batteries and hybrid inverters
+        if node_type in [DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
+            if node_type == DEVICE_TYPE_HYBRID_INVERTER:
+                for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data,  # Parent is inverter, but value comes from children
+                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                            value_extractor=None
+                        )
+                    )
+            else:
+                for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
                     entities_to_add.append(
                         EnirisHacsSensor(
                             coordinator,
                             device_data,
                             entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=None # We'll handle in the sensor class
+                            value_extractor=None
                         )
                     )
-        # 1c. Add Charging/Discharging Power sensors for all batteries and hybrid inverters
-        if node_type in [DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
-            # For hybrid inverter, attach sensors to the inverter but use sum of all child batteries
-            if node_type == DEVICE_TYPE_HYBRID_INVERTER:
-                # Only add if at least one child battery has data
-                total_has_data = False
-                for child in device_data.get("_processed_children", []):
-                    if child.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
-                        battery_data = child.get("_latest_data", {})
-                        value = battery_data.get("actualPowerTot_W")
-                        if isinstance(value, dict):
-                            if any(v is not None for v in value.values()):
-                                total_has_data = True
-                                break
-                        elif value is not None:
-                            total_has_data = True
-                            break
-                if total_has_data:
-                    for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
-                        entities_to_add.append(
-                            EnirisHacsSensor(
-                                coordinator,
-                                device_data,  # Parent is inverter, but value comes from children
-                                entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                                value_extractor=None
-                            )
-                        )
-            else:
-                # For standalone battery, attach sensors to the battery
-                for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
-                    value = latest_data.get("actualPowerTot_W")
-                    has_data = False
-                    if isinstance(value, dict):
-                        has_data = any(v is not None for v in value.values())
-                    elif value is not None:
-                        has_data = True
-                    if has_data:
-                        entities_to_add.append(
-                            EnirisHacsSensor(
-                                coordinator,
-                                device_data,
-                                entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                                value_extractor=None
-                            )
-                        )
 
         # 2. Add sensors based on conceptual measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
             for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[node_type]:
-                # Only add if there is actual data for this field
-                value = latest_data.get(m_key)
-                has_data = False
-                if isinstance(value, dict):
-                    has_data = any(v is not None for v in value.values())
-                elif value is not None:
-                    has_data = True
-                if has_data:
-                    entities_to_add.append(
-                        EnirisHacsSensor(
-                            coordinator,
-                            device_data, # Primary device data
-                            entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=get_value_from_conceptual_measurements
-                        )
+                entities_to_add.append(
+                    EnirisHacsSensor(
+                        coordinator,
+                        device_data, # Primary device data
+                        entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                        value_extractor=get_value_from_conceptual_measurements
                     )
+                )
 
         # 3. Add sensors for CHİLD devices (e.g., battery or PV attached to an inverter)
-        # These sensors will be associated with the PARENT's HA device entry.
         for child_device_data in device_data.get("_processed_children", []):
             child_properties = child_device_data.get("properties", {})
             child_node_type = child_properties.get("nodeType")
@@ -267,37 +227,28 @@ async def async_setup_entry(
 
             # 3a. Common sensors for the child device (from its own info block)
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in SENSOR_DESCRIPTIONS_COMMON:
-                if get_value_from_info(child_device_data, key) is not None:
+                entities_to_add.append(
+                    EnirisHacsSensor(
+                        coordinator,
+                        device_data, # Parent device data for HA device linking
+                        child_device_data=child_device_data, # Actual data source for this sensor
+                        entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                        value_extractor=get_value_from_info, # Use info from child_device_data
+                        is_info_sensor=True
+                    )
+                )
+            # 3b. Conceptual measurement sensors for the child device
+            if child_node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
+                for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[child_node_type]:
                     entities_to_add.append(
                         EnirisHacsSensor(
                             coordinator,
                             device_data, # Parent device data for HA device linking
                             child_device_data=child_device_data, # Actual data source for this sensor
-                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=get_value_from_info, # Use info from child_device_data
-                            is_info_sensor=True
+                            entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                            value_extractor=get_value_from_conceptual_measurements
                         )
                     )
-            
-            # 3b. Conceptual measurement sensors for the child device
-            if child_node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
-                for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[child_node_type]:
-                    value = child_latest_data.get(m_key)
-                    has_data = False
-                    if isinstance(value, dict):
-                        has_data = any(v is not None for v in value.values())
-                    elif value is not None:
-                        has_data = True
-                    if has_data:
-                        entities_to_add.append(
-                            EnirisHacsSensor(
-                                coordinator,
-                                device_data, # Parent device data for HA device linking
-                                child_device_data=child_device_data, # Actual data source for this sensor
-                                entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                                value_extractor=get_value_from_conceptual_measurements
-                            )
-                        )
 
     if entities_to_add:
         _LOGGER.info("Adding %s sensor entities.", len(entities_to_add))
