@@ -507,6 +507,9 @@ class EnirisHacsApiClient:
                                     child_device.get("properties", {}).get("nodeId"), 
                                     child_latest_data)
 
+                    # Mark parent as updated if any child updated
+                    device_data["_children_last_updated"] = datetime.now(timezone.utc).isoformat()
+
                     _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
                     processed_devices[node_id] = device_data
                 except Exception as e:
