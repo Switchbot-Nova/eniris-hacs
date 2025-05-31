@@ -235,31 +235,41 @@ class EnirisHacsApiClient:
                 _LOGGER.warning("No telemetry data received for device %s", node_id)
                 return {}
 
-            # Get the first (and should be only) series
-            series = response[0].get("series", [])
-            if not series:
-                _LOGGER.warning("No series data in telemetry response for device %s", node_id)
-                return {}
-
-            # Get the values array
-            values = series[0].get("values", [])
-            if not values:
-                _LOGGER.warning("No values in telemetry response for device %s", node_id)
-                return {}
-
-            # Get the latest value and its timestamp
-            latest_value = values[-1]
-            timestamp = latest_value[0]  # First element is timestamp in milliseconds
-            field_values = latest_value[1:]  # Rest of the elements are the field values
-
-            # Create a dictionary mapping field names to their values
             result = {}
-            for i, field in enumerate(fields):
-                if i < len(field_values):
-                    result[field] = field_values[i]
-            
+            latest_timestamp = None
+
+            # Process each statement in the response
+            for statement in response:
+                if not statement.get("series"):
+                    continue
+
+                for series in statement["series"]:
+                    if not series.get("values"):
+                        continue
+
+                    # Get the latest value from this series
+                    latest_value = series["values"][-1]
+                    timestamp = latest_value[0]  # First element is timestamp
+                    
+                    # If this is a newer timestamp, update our result
+                    if latest_timestamp is None or timestamp > latest_timestamp:
+                        latest_timestamp = timestamp
+                        
+                        # Get the column names
+                        columns = series.get("columns", [])
+                        
+                        # Map values to their column names
+                        for i, value in enumerate(latest_value[1:], 1):  # Skip timestamp
+                            if i < len(columns):
+                                field_name = columns[i]
+                                # Remove any prefix like 'sum_' from the field name
+                                if field_name.startswith("sum_"):
+                                    field_name = field_name[4:]
+                                result[field_name] = value
+
             # Add the timestamp in UTC
-            result["timestamp"] = datetime.fromtimestamp(timestamp / 1000, timezone.utc)
+            if latest_timestamp:
+                result["timestamp"] = datetime.fromtimestamp(int(latest_timestamp) / 1000, timezone.utc)
             
             return result
 
