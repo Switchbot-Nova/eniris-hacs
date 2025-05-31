@@ -59,6 +59,12 @@ IMPORT_EXPORT_POWER_SENSORS = [
     ("export_power", "Export Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:transmission-tower-export", None),
 ]
 
+# Add these to all battery devices
+BATTERY_CHARGE_DISCHARGE_SENSORS = [
+    ("charging_power", "Charging Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-charging", None),
+    ("discharging_power", "Discharging Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-discharging", None),
+]
+
 # Specific sensors based on nodeInfluxSeries fields (CONCEPTUAL - REQUIRES LIVE DATA FETCH)
 # This part is highly speculative as we don't have live data.
 # We'll define them, but they won't update without a mechanism to fetch actual measurements.
@@ -182,6 +188,24 @@ async def async_setup_entry(
                             device_data,
                             entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
                             value_extractor=None # We'll handle in the sensor class
+                        )
+                    )
+        # 1c. Add Charging/Discharging Power sensors for all batteries
+        if node_type == DEVICE_TYPE_BATTERY:
+            for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
+                value = latest_data.get("actualPowerTot_W")
+                has_data = False
+                if isinstance(value, dict):
+                    has_data = any(v is not None for v in value.values())
+                elif value is not None:
+                    has_data = True
+                if has_data:
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data,
+                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                            value_extractor=None
                         )
                     )
 
@@ -337,6 +361,13 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
             value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
             self._attr_native_value = value if value is not None and value > 0 else 0
         elif self._value_key == "export_power":
+            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+            self._attr_native_value = abs(value) if value is not None and value < 0 else 0
+        # Custom logic for battery charging/discharging power
+        elif self._value_key == "charging_power":
+            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+            self._attr_native_value = value if value is not None and value > 0 else 0
+        elif self._value_key == "discharging_power":
             value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
             self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         # For state of charge, scale from 0-1 to 0-100
