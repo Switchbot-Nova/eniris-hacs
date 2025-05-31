@@ -364,12 +364,27 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
             value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
             self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         # Custom logic for battery/hybrid inverter charging/discharging power
-        elif self._value_key == "charging_power":
-            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
-            self._attr_native_value = value if value is not None and value > 0 else 0
-        elif self._value_key == "discharging_power":
-            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
-            self._attr_native_value = abs(value) if value is not None and value < 0 else 0
+        elif self._value_key in ("charging_power", "discharging_power"):
+            # For hybrid inverter: sum all child batteries' actualPowerTot_W
+            if self.primary_device_data.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
+                total_power = 0
+                for child in self.primary_device_data.get("_processed_children", []):
+                    if child.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                        battery_data = child.get("_latest_data", {})
+                        value = battery_data.get("actualPowerTot_W", {}).get("latest") if isinstance(battery_data.get("actualPowerTot_W"), dict) else battery_data.get("actualPowerTot_W")
+                        if value is not None:
+                            total_power += value
+                if self._value_key == "charging_power":
+                    self._attr_native_value = total_power if total_power > 0 else 0
+                else:  # discharging_power
+                    self._attr_native_value = abs(total_power) if total_power < 0 else 0
+            else:
+                # For standalone battery
+                value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+                if self._value_key == "charging_power":
+                    self._attr_native_value = value if value is not None and value > 0 else 0
+                else:  # discharging_power
+                    self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         # For state of charge, scale from 0-1 to 0-100
         elif self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
             value = latest_data[self._value_key].get("latest") if isinstance(latest_data[self._value_key], dict) else latest_data[self._value_key]
