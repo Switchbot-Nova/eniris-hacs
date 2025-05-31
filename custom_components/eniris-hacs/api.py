@@ -298,8 +298,19 @@ class EnirisHacsApiClient:
 
             # Add the timestamp in UTC
             if latest_timestamp:
-                result["timestamp"] = datetime.fromtimestamp(int(latest_timestamp) / 1000, timezone.utc)
-            
+                # Handle both integer (Unix ms) and ISO8601 string
+                if isinstance(latest_timestamp, int):
+                    result["timestamp"] = datetime.fromtimestamp(latest_timestamp / 1000, timezone.utc)
+                elif isinstance(latest_timestamp, str):
+                    # Remove trailing 'Z' if present and parse
+                    ts = latest_timestamp.rstrip('Z')
+                    try:
+                        # Handle microseconds if present
+                        result["timestamp"] = datetime.fromisoformat(ts)
+                    except Exception:
+                        # Fallback: parse without microseconds
+                        result["timestamp"] = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+
             _LOGGER.debug("Telemetry data for device %s: %s", node_id, result)
             return result
 
@@ -346,7 +357,18 @@ class EnirisHacsApiClient:
                                                 field_name = field_name[4:]
                                             result[field_name] = value
                         if latest_timestamp:
-                            result["timestamp"] = datetime.fromtimestamp(int(latest_timestamp) / 1000, timezone.utc)
+                            # Handle both integer (Unix ms) and ISO8601 string
+                            if isinstance(latest_timestamp, int):
+                                result["timestamp"] = datetime.fromtimestamp(latest_timestamp / 1000, timezone.utc)
+                            elif isinstance(latest_timestamp, str):
+                                # Remove trailing 'Z' if present and parse
+                                ts = latest_timestamp.rstrip('Z')
+                                try:
+                                    # Handle microseconds if present
+                                    result["timestamp"] = datetime.fromisoformat(ts)
+                                except Exception:
+                                    # Fallback: parse without microseconds
+                                    result["timestamp"] = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
                         return result
                 except Exception as retry_error:
                     _LOGGER.error("Still failed to fetch telemetry after token refresh: %s", retry_error)
