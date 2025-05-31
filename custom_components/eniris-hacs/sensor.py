@@ -334,6 +334,7 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
             return
 
         latest_data = current_device_data_for_sensor.get("_latest_data", {})
+        current_properties = current_device_data_for_sensor.get("properties", {}) # Get current properties
 
         # Custom logic for import/export power sensors
         if self._value_key == "import_power":
@@ -342,54 +343,86 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         elif self._value_key == "export_power":
             value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
             self._attr_native_value = abs(value) if value is not None and value < 0 else 0
+        
         # Custom logic for battery/hybrid inverter charging/discharging power
         elif self._value_key in ("charging_power", "discharging_power"):
-            # For hybrid inverter: sum all child batteries' actualPowerTot_W
-            if self.primary_device_data.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
+            node_type_of_current_device = current_properties.get("nodeType") # Use current nodeType
+
+            if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
                 total_power = 0
-                for child in self.primary_device_data.get("_processed_children", []):
-                    if child.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
-                        battery_data = child.get("_latest_data", {})
-                        value = battery_data.get("actualPowerTot_W", {}).get("latest") if isinstance(battery_data.get("actualPowerTot_W"), dict) else battery_data.get("actualPowerTot_W")
+                # Access _processed_children from the *updated* data block of the hybrid inverter
+                # Ensure coordinator updates _latest_data within these child blocks too.
+                for child_block in current_device_data_for_sensor.get("_processed_children", []): # Use fresh children list
+                    if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                        battery_latest_data = child_block.get("_latest_data", {}) # Get latest_data from the fresh child_block
+                        value = battery_latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(battery_latest_data.get("actualPowerTot_W"), dict) else battery_latest_data.get("actualPowerTot_W")
                         if value is not None:
                             total_power += value
+                
                 if self._value_key == "charging_power":
                     self._attr_native_value = total_power if total_power > 0 else 0
                 else:  # discharging_power
                     self._attr_native_value = abs(total_power) if total_power < 0 else 0
-            else:
-                # For standalone battery
+            
+            elif node_type_of_current_device == DEVICE_TYPE_BATTERY: # Standalone battery
+                # This logic relies on current_device_data_for_sensor being the standalone battery's data
                 value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
                 if self._value_key == "charging_power":
                     self._attr_native_value = value if value is not None and value > 0 else 0
                 else:  # discharging_power
                     self._attr_native_value = abs(value) if value is not None and value < 0 else 0
+            else:
+                self._attr_native_value = None
+        
         # For state of charge, scale from 0-1 to 0-100
         elif self._value_key == "stateOfCharge_frac":
-            if self.primary_device_data.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
-                # Retrieve state of charge from child battery
-                for child in self.primary_device_data.get("_processed_children", []):
-                    if child.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
-                        battery_data = child.get("_latest_data", {})
-                        value = battery_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(battery_data.get("stateOfCharge_frac"), dict) else battery_data.get("stateOfCharge_frac")
+            node_type_of_current_device = current_properties.get("nodeType") # Use current nodeType
+
+            if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
+                # Retrieve state of charge from child battery using current data
+                self._attr_native_value = None # Default if no battery child found or no value
+                for child_block in current_device_data_for_sensor.get("_processed_children", []): # Use fresh children list
+                    if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                        battery_latest_data = child_block.get("_latest_data", {}) # Get latest_data from fresh child_block
+                        value = battery_latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(battery_latest_data.get("stateOfCharge_frac"), dict) else battery_latest_data.get("stateOfCharge_frac")
                         if value is not None:
                             self._attr_native_value = value * 100
-                            break
-            else:
+                            break 
+            else: # Assumed to be a standalone battery or a direct child battery sensor
                 value = latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(latest_data.get("stateOfCharge_frac"), dict) else latest_data.get("stateOfCharge_frac")
                 self._attr_native_value = value * 100 if value is not None else None
+        
         # For energy delta fields, use the 'sum' value
         elif self._value_key.endswith("EnergyDeltaTot_Wh") or self._value_key.endswith("chargedEnergyDeltaTot_Wh") or self._value_key.endswith("dischargedEnergyDeltaTot_Wh"):
             value = latest_data.get(self._value_key, {}).get("sum") if isinstance(latest_data.get(self._value_key), dict) else None
             self._attr_native_value = value
+        
         # For all other fields, use the 'latest' value if available
         else:
-            value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
-            self._attr_native_value = value
+            # This handles sensors where value_extractor was get_value_from_conceptual_measurements
+            # and those where is_info_sensor is True (value_extractor=get_value_from_info)
+            # For conceptual (live) measurements:
+            if not self._is_info_sensor and self._value_extractor == get_value_from_conceptual_measurements:
+                 # The original logic for conceptual measurements expected the value extractor to get the value
+                 # However, the current structure relies on _latest_data for most live values.
+                 # If get_value_from_conceptual_measurements is just a placeholder returning None,
+                 # we should ensure the value is actually sourced from latest_data if available there.
+                 value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
+                 self._attr_native_value = value
+            elif self._is_info_sensor: # Static info sensor
+                 # Value extractor for info sensors is get_value_from_info
+                 # This is usually called once at init or if data structure allows updates to info.
+                 # For safety, re-evaluate if needed, though info is typically static.
+                 self._attr_native_value = self._value_extractor(current_device_data_for_sensor, self._value_key)
+            else:
+                 # Fallback for other non-info, non-special-case sensors that might exist or future ones
+                 value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
+                 self._attr_native_value = value
+
 
         _LOGGER.debug("Sensor %s updated native_value to: %s", 
-                     self.unique_id, 
-                     self._attr_native_value)
+                      self.unique_id, 
+                      self._attr_native_value)
 
 
     @callback
