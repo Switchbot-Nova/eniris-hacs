@@ -53,6 +53,12 @@ SENSOR_DESCRIPTIONS_COMMON = [
     # Add more based on `properties.info` if relevant
 ]
 
+# Add these to all device types that can have import/export power
+IMPORT_EXPORT_POWER_SENSORS = [
+    ("import_power", "Import Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:transmission-tower-import", None),
+    ("export_power", "Export Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:transmission-tower-export", None),
+]
+
 # Specific sensors based on nodeInfluxSeries fields (CONCEPTUAL - REQUIRES LIVE DATA FETCH)
 # This part is highly speculative as we don't have live data.
 # We'll define them, but they won't update without a mechanism to fetch actual measurements.
@@ -159,6 +165,26 @@ async def async_setup_entry(
                     )
                 )
         
+        # 1b. Add Import/Export Power sensors for all power meters, PV, and battery
+        if node_type in [DEVICE_TYPE_POWER_METER, DEVICE_TYPE_SOLAR_OPTIMIZER, DEVICE_TYPE_BATTERY]:
+            for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in IMPORT_EXPORT_POWER_SENSORS:
+                # Only add if actualPowerTot_W is present
+                value = latest_data.get("actualPowerTot_W")
+                has_data = False
+                if isinstance(value, dict):
+                    has_data = any(v is not None for v in value.values())
+                elif value is not None:
+                    has_data = True
+                if has_data:
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data,
+                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                            value_extractor=None # We'll handle in the sensor class
+                        )
+                    )
+
         # 2. Add sensors based on conceptual measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
             for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[node_type]:
@@ -306,8 +332,15 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
 
         latest_data = current_device_data_for_sensor.get("_latest_data", {})
 
+        # Custom logic for import/export power sensors
+        if self._value_key == "import_power":
+            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+            self._attr_native_value = value if value is not None and value > 0 else 0
+        elif self._value_key == "export_power":
+            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+            self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         # For state of charge, scale from 0-1 to 0-100
-        if self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
+        elif self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
             value = latest_data[self._value_key].get("latest") if isinstance(latest_data[self._value_key], dict) else latest_data[self._value_key]
             self._attr_native_value = value * 100 if value is not None else None
         # For energy delta fields, use the 'sum' value
