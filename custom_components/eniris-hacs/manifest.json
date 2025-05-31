@@ -9,6 +9,7 @@
     "version": "0.1.0",
     "requirements": ["aiohttp>=3.8.0"],
     "dependencies": [],
-    "loggers": ["custom_components.eniris-hacs"]
-  }
+    "loggers": ["custom_components.eniris-hacs"],
+    "logo": "logo.png"
+}
   

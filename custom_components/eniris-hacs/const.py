@@ -17,7 +17,7 @@ DEVICES_URL = f"{API_BASE_URL}/device"
 
 # Update interval for polling data (in seconds)
 # Adjust as needed, considering API rate limits
-SCAN_INTERVAL_SECONDS = 300 # 5 minutes
+SCAN_INTERVAL_SECONDS = 60  # 1 minute
 
 # Supported device types
 SUPPORTED_NODE_TYPES = [
