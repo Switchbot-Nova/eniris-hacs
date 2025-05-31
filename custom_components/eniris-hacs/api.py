@@ -199,31 +199,23 @@ class EnirisHacsApiClient:
         devices_by_node_id: Dict[str, Dict[str, Any]] = {}
         processed_devices: Dict[str, Dict[str, Any]] = {}
 
-        # First pass: index all devices by their nodeId and filter by supported types
+        # First pass: index all devices by their nodeId
         for device_data in raw_devices:
             properties = device_data.get("properties", {})
             node_id = properties.get("nodeId")
-            node_type = properties.get("nodeType")
-
             if not node_id:
                 _LOGGER.warning("Device data missing 'nodeId': %s", device_data.get("id"))
                 continue
             
             device_data["_processed_children"] = [] # To store actual child device data
-
             devices_by_node_id[node_id] = device_data
 
-        # Second pass: build hierarchy and filter primary devices
-        # Primary devices are those not children of another processed device of a primary type
-        # and are of a supported type.
-        all_child_node_ids = set()
-
+        # Second pass: build hierarchy and identify primary devices
         for node_id, device_data in devices_by_node_id.items():
             properties = device_data.get("properties", {})
             node_type = properties.get("nodeType")
 
             if node_type not in SUPPORTED_NODE_TYPES:
-                _LOGGER.debug("Skipping device %s, nodeType '%s' is not supported.", node_id, node_type)
                 continue
 
             # Populate children for this device
@@ -231,75 +223,39 @@ class EnirisHacsApiClient:
             for child_node_id in child_node_ids:
                 if child_node_id in devices_by_node_id:
                     child_device_data = devices_by_node_id[child_node_id]
-                    # Check if child is also a supported type before adding
-                    if child_device_data.get("properties", {}).get("nodeType") in SUPPORTED_NODE_TYPES:
-                        device_data["_processed_children"].append(child_device_data)
-                        all_child_node_ids.add(child_node_id)
-                else:
-                    _LOGGER.warning("Child node ID %s for parent %s not found in fetched devices.", child_node_id, node_id)
-        
-        # Third pass: identify top-level devices to create HA devices for
-        # These are devices that are not themselves children of other *supported* devices.
-        for node_id, device_data in devices_by_node_id.items():
-            properties = device_data.get("properties", {})
-            node_type = properties.get("nodeType")
+                    device_data["_processed_children"].append(child_device_data)
 
-            if node_type not in SUPPORTED_NODE_TYPES:
-                continue # Already filtered, but good to double check
+            # Determine if this device should be a primary device
+            is_primary = False
 
-            # A device is top-level if it's not in the set of children *that were processed*.
-            # This handles the case where a hybrid inverter might be listed as a child of something
-            # non-supported, but we still want to treat the hybrid inverter as a primary device.
-            if node_id not in all_child_node_ids:
-                 _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
-                 processed_devices[node_id] = device_data
+            # Always make hybrid inverters primary devices
+            if node_type == DEVICE_TYPE_HYBRID_INVERTER:
+                is_primary = True
+            # For other device types, check if they're not children of a hybrid inverter
             else:
-                # If it is a child, check if its parent is *not* a primary device type.
-                # This is tricky. The current logic is: if it's a child of *any* device
-                # that we indexed, and that child relationship was processed, it's not top-level.
-                # The goal is to avoid adding, for example, a battery separately if it's already
-                # a child of a hybrid inverter that *is* being added.
-                is_child_of_primary = False
-                for parent_node_id, parent_data in devices_by_node_id.items():
-                    if node_id in parent_data.get("properties", {}).get("nodeChildrenIds", []):
-                        # Check if this parent is one of the devices we are adding as primary
-                        if parent_node_id in processed_devices: # This check might be problematic due to order of iteration
-                             is_child_of_primary = True
-                             break
-                if not is_child_of_primary:
-                    _LOGGER.debug(
-                        "Device %s (type: %s) is a child, but its parent is not a primary HA device (or not yet processed as such). Adding it as primary.",
-                        node_id, node_type
-                    )
-                    # This logic might need refinement based on how strictly "hierarchy" should be enforced.
-                    # For now, if it's supported and not explicitly a child of an *already selected* primary device, add it.
-                    # A simpler rule might be: if it's a hybridInverter, it's always primary.
-                    # If it's another supported type AND not a child of a hybridInverter, it's primary.
-                    
-                    # Simpler approach:
-                    # If device_type is hybridInverter, it's a primary candidate.
-                    # If device_type is battery, solarOptimizer, powerMeter, it's a primary candidate
-                    # *unless* it's a child of a hybridInverter that is also in devices_by_node_id.
-                    
-                    is_child_of_hybrid_inverter = False
-                    if node_type != DEVICE_TYPE_HYBRID_INVERTER:
-                        for p_id, p_data in devices_by_node_id.items(): # Check all devices
-                            if p_data.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER and \
-                               node_id in p_data.get("properties", {}).get("nodeChildrenIds", []):
-                                is_child_of_hybrid_inverter = True
-                                break
-                    
-                    if node_type == DEVICE_TYPE_HYBRID_INVERTER or not is_child_of_hybrid_inverter:
-                        _LOGGER.debug("Adding device %s (type: %s) as a primary HA device (refined logic).", node_id, node_type)
-                        processed_devices[node_id] = device_data
-                    else:
-                        _LOGGER.debug("Skipping device %s (type: %s) as it's a child of a hybrid inverter.", node_id, node_type)
+                parent_ids = properties.get("nodeParentsIds", [])
+                is_child_of_hybrid = False
+                for parent_id in parent_ids:
+                    parent_device = devices_by_node_id.get(parent_id)
+                    if parent_device and parent_device.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
+                        is_child_of_hybrid = True
+                        break
+                is_primary = not is_child_of_hybrid
+
+            if is_primary:
+                _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
+                processed_devices[node_id] = device_data
 
         _LOGGER.info("Processed %s primary devices for Home Assistant.", len(processed_devices))
         for node_id, dev_data in processed_devices.items():
-            _LOGGER.debug("Primary device: %s, Type: %s, Children found: %s", node_id, dev_data.get("properties",{}).get("nodeType"), len(dev_data.get("_processed_children",[])))
+            _LOGGER.debug("Primary device: %s, Type: %s, Children found: %s", 
+                         node_id, 
+                         dev_data.get("properties",{}).get("nodeType"), 
+                         len(dev_data.get("_processed_children",[])))
             for child_dev in dev_data.get("_processed_children",[]):
-                _LOGGER.debug("  Child: %s, Type: %s", child_dev.get("properties",{}).get("nodeId"), child_dev.get("properties",{}).get("nodeType"))
+                _LOGGER.debug("  Child: %s, Type: %s", 
+                            child_dev.get("properties",{}).get("nodeId"), 
+                            child_dev.get("properties",{}).get("nodeType"))
         return processed_devices
 
     async def close(self) -> None:
