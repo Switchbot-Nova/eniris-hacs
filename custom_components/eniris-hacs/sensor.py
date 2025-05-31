@@ -68,19 +68,40 @@ CONCEPTUAL_MEASUREMENT_SENSORS = {
         # "faultCodes1" - could be a diagnostic sensor
     ],
     DEVICE_TYPE_BATTERY: [
-        # Example: Assuming fields like "soc_percent", "power_W", "energy_Wh" might exist
-        ("soc_percent", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
-        ("power_W", "Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-charging", None),
-        ("energy_Wh", "Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL, "mdi:battery-plus", None),
+        ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
+        ("actualPowerTot_W", "Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-charging", None),
+        ("chargedEnergyDeltaTot_Wh", "Charged Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:battery-charging", None),
+        ("dischargedEnergyDeltaTot_Wh", "Discharged Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:battery-discharging", None),
     ],
     DEVICE_TYPE_SOLAR_OPTIMIZER: [
-        ("pvPower_W", "PV Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:solar-panel", None),
-        ("pvEnergy_Wh", "PV Energy Today", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:solar-panel-large", None),
+        ("actualPowerTot_W", "PV Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:solar-panel", None),
+        ("producedEnergyDeltaTot_Wh", "PV Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:solar-panel-large", None),
     ],
     DEVICE_TYPE_POWER_METER: [
-        ("gridPower_W", "Grid Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:gauge", None),
-        ("gridEnergyExport_Wh", "Grid Export", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:home-export-outline", None),
-        ("gridEnergyImport_Wh", "Grid Import", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:home-import-outline", None),
+        # Total measurements
+        ("actualPowerTot_W", "Total Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:gauge", None),
+        ("exportedEnergyDeltaTot_Wh", "Exported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-export", None),
+        ("importedEnergyDeltaTot_Wh", "Imported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-import", None),
+        ("exportedAbsEnergyTot_Wh", "Total Exported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL, "mdi:transmission-tower-export", None),
+        ("importedAbsEnergyTot_Wh", "Total Imported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL, "mdi:transmission-tower-import", None),
+        ("reacPowerTot_VAr", "Total Reactive Power", "var", SensorDeviceClass.REACTIVE_POWER, SensorStateClass.MEASUREMENT, "mdi:flash", None),
+        ("powerfactor", "Power Factor", None, None, SensorStateClass.MEASUREMENT, "mdi:flash", None),
+        ("frequency_Hz", "Frequency", "Hz", SensorDeviceClass.FREQUENCY, SensorStateClass.MEASUREMENT, "mdi:sine-wave", None),
+        
+        # Phase 1 measurements
+        ("actualPowerL1_W", "Phase 1 Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:gauge", None),
+        ("voltageL1N_V", "Phase 1 Voltage", "V", SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT, "mdi:lightning-bolt", None),
+        ("currentL1_A", "Phase 1 Current", "A", SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT, "mdi:current-ac", None),
+        
+        # Phase 2 measurements
+        ("actualPowerL2_W", "Phase 2 Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:gauge", None),
+        ("voltageL2N_V", "Phase 2 Voltage", "V", SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT, "mdi:lightning-bolt", None),
+        ("currentL2_A", "Phase 2 Current", "A", SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT, "mdi:current-ac", None),
+        
+        # Phase 3 measurements
+        ("actualPowerL3_W", "Phase 3 Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:gauge", None),
+        ("voltageL3N_V", "Phase 3 Voltage", "V", SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT, "mdi:lightning-bolt", None),
+        ("currentL3_A", "Phase 3 Current", "A", SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT, "mdi:current-ac", None),
     ],
 }
 
