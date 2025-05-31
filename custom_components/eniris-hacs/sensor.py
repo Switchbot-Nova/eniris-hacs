@@ -192,22 +192,49 @@ async def async_setup_entry(
                     )
         # 1c. Add Charging/Discharging Power sensors for all batteries and hybrid inverters
         if node_type in [DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
-            for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
-                value = latest_data.get("actualPowerTot_W")
-                has_data = False
-                if isinstance(value, dict):
-                    has_data = any(v is not None for v in value.values())
-                elif value is not None:
-                    has_data = True
-                if has_data:
-                    entities_to_add.append(
-                        EnirisHacsSensor(
-                            coordinator,
-                            device_data,
-                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=None
+            # For hybrid inverter, attach sensors to the inverter but use sum of all child batteries
+            if node_type == DEVICE_TYPE_HYBRID_INVERTER:
+                # Only add if at least one child battery has data
+                total_has_data = False
+                for child in device_data.get("_processed_children", []):
+                    if child.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                        battery_data = child.get("_latest_data", {})
+                        value = battery_data.get("actualPowerTot_W")
+                        if isinstance(value, dict):
+                            if any(v is not None for v in value.values()):
+                                total_has_data = True
+                                break
+                        elif value is not None:
+                            total_has_data = True
+                            break
+                if total_has_data:
+                    for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
+                        entities_to_add.append(
+                            EnirisHacsSensor(
+                                coordinator,
+                                device_data,  # Parent is inverter, but value comes from children
+                                entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                                value_extractor=None
+                            )
                         )
-                    )
+            else:
+                # For standalone battery, attach sensors to the battery
+                for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
+                    value = latest_data.get("actualPowerTot_W")
+                    has_data = False
+                    if isinstance(value, dict):
+                        has_data = any(v is not None for v in value.values())
+                    elif value is not None:
+                        has_data = True
+                    if has_data:
+                        entities_to_add.append(
+                            EnirisHacsSensor(
+                                coordinator,
+                                device_data,
+                                entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                                value_extractor=None
+                            )
+                        )
 
         # 2. Add sensors based on conceptual measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
