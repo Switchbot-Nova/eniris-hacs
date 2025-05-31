@@ -217,7 +217,7 @@ class EnirisHacsApiClient:
                     "namespace": {
                         "version": "1",
                         "database": "beauvent",
-                        "retentionPolicy": "rp_one_s"
+                        "retentionPolicy": "rp_one_m"
                     },
                     "measurement": measurement
                 },
@@ -239,7 +239,7 @@ class EnirisHacsApiClient:
                     "namespace": {
                         "version": "1",
                         "database": "beauvent",
-                        "retentionPolicy": "rp_one_s"
+                        "retentionPolicy": "rp_one_m"
                     },
                     "measurement": measurement
                 },

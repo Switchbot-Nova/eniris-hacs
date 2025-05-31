@@ -51,4 +51,4 @@ If your device does not provide a cumulative energy value, you can use Home Assi
 Pull requests and issues are welcome! Please open an issue if you find a bug or have a feature request.
 
 ## License
-MIT 
+GPL-3.0 license 
