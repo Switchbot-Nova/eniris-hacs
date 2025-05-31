@@ -267,38 +267,50 @@ class EnirisHacsApiClient:
             result = {}
             latest_timestamp = None
 
-            # Process each statement in the response
-            for statement in response:
-                if not statement.get("series"):
+            # Each field has two queries: one for latest, one for sum
+            # We'll process them in pairs
+            for i in range(0, len(response), 2):
+                latest_stmt = response[i] if i < len(response) else None
+                sum_stmt = response[i+1] if i+1 < len(response) else None
+                field = fields[i//2] if i//2 < len(fields) else None
+                if not field:
                     continue
+                result[field] = {}
 
-                for series in statement["series"]:
-                    if not series.get("values"):
-                        continue
-
-                    # Get the latest value from this series
-                    latest_value = series["values"][-1]
-                    timestamp = latest_value[0]  # First element is timestamp
-                    
-                    # If this is a newer timestamp, update our result
-                    if latest_timestamp is None or timestamp > latest_timestamp:
-                        latest_timestamp = timestamp
-                        
+                # Process latest value
+                if latest_stmt and latest_stmt.get("series"):
+                    for series in latest_stmt["series"]:
+                        if not series.get("values"):
+                            continue
+                        latest_value = series["values"][-1]
+                        timestamp = latest_value[0]
                         # Get the column names
                         columns = series.get("columns", [])
-                        
-                        # Map values to their column names
-                        for i, value in enumerate(latest_value[1:], 1):  # Skip timestamp
-                            if i < len(columns):
-                                field_name = columns[i]
-                                # Remove any prefix like 'sum_' from the field name
+                        for idx, value in enumerate(latest_value[1:], 1):
+                            if idx < len(columns):
+                                field_name = columns[idx]
+                                if field_name == field:
+                                    result[field]["latest"] = value
+                                    # Save timestamp for latest value
+                                    if latest_timestamp is None or timestamp > latest_timestamp:
+                                        latest_timestamp = timestamp
+                # Process sum value
+                if sum_stmt and sum_stmt.get("series"):
+                    for series in sum_stmt["series"]:
+                        if not series.get("values"):
+                            continue
+                        sum_value = series["values"][-1]
+                        columns = series.get("columns", [])
+                        for idx, value in enumerate(sum_value[1:], 1):
+                            if idx < len(columns):
+                                field_name = columns[idx]
                                 if field_name.startswith("sum_"):
                                     field_name = field_name[4:]
-                                result[field_name] = value
+                                if field_name == field:
+                                    result[field]["sum"] = value
 
             # Add the timestamp in UTC
             if latest_timestamp:
-                # Handle both integer (Unix ms) and ISO8601 string
                 if isinstance(latest_timestamp, int):
                     result["timestamp"] = datetime.fromtimestamp(latest_timestamp / 1000, timezone.utc)
                 elif isinstance(latest_timestamp, str):
@@ -336,23 +348,45 @@ class EnirisHacsApiClient:
                         # Process the response as before
                         result = {}
                         latest_timestamp = None
-                        for statement in response:
-                            if not statement.get("series"):
+                        for i in range(0, len(response), 2):
+                            latest_stmt = response[i] if i < len(response) else None
+                            sum_stmt = response[i+1] if i+1 < len(response) else None
+                            field = fields[i//2] if i//2 < len(fields) else None
+                            if not field:
                                 continue
-                            for series in statement["series"]:
-                                if not series.get("values"):
-                                    continue
-                                latest_value = series["values"][-1]
-                                timestamp = latest_value[0]
-                                if latest_timestamp is None or timestamp > latest_timestamp:
-                                    latest_timestamp = timestamp
+                            result[field] = {}
+
+                            # Process latest value
+                            if latest_stmt and latest_stmt.get("series"):
+                                for series in latest_stmt["series"]:
+                                    if not series.get("values"):
+                                        continue
+                                    latest_value = series["values"][-1]
+                                    timestamp = latest_value[0]
+                                    # Get the column names
                                     columns = series.get("columns", [])
-                                    for i, value in enumerate(latest_value[1:], 1):
-                                        if i < len(columns):
-                                            field_name = columns[i]
+                                    for idx, value in enumerate(latest_value[1:], 1):
+                                        if idx < len(columns):
+                                            field_name = columns[idx]
+                                            if field_name == field:
+                                                result[field]["latest"] = value
+                                                # Save timestamp for latest value
+                                                if latest_timestamp is None or timestamp > latest_timestamp:
+                                                    latest_timestamp = timestamp
+                            # Process sum value
+                            if sum_stmt and sum_stmt.get("series"):
+                                for series in sum_stmt["series"]:
+                                    if not series.get("values"):
+                                        continue
+                                    sum_value = series["values"][-1]
+                                    columns = series.get("columns", [])
+                                    for idx, value in enumerate(sum_value[1:], 1):
+                                        if idx < len(columns):
+                                            field_name = columns[idx]
                                             if field_name.startswith("sum_"):
                                                 field_name = field_name[4:]
-                                            result[field_name] = value
+                                            if field_name == field:
+                                                result[field]["sum"] = value
                         if latest_timestamp:
                             # Handle both integer (Unix ms) and ISO8601 string
                             if isinstance(latest_timestamp, int):

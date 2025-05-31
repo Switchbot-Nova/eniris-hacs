@@ -144,6 +144,7 @@ async def async_setup_entry(
         properties = device_data.get("properties", {})
         node_type = properties.get("nodeType")
         device_info_block = properties.get("info", {})
+        latest_data = device_data.get("_latest_data", {})
 
         # 1. Add sensors based on properties.info (COMMON SENSORS)
         for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in SENSOR_DESCRIPTIONS_COMMON:
@@ -161,14 +162,22 @@ async def async_setup_entry(
         # 2. Add sensors based on conceptual measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
             for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[node_type]:
-                entities_to_add.append(
-                    EnirisHacsSensor(
-                        coordinator,
-                        device_data, # Primary device data
-                        entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                        value_extractor=get_value_from_conceptual_measurements
+                # Only add if there is actual data for this field
+                value = latest_data.get(m_key)
+                has_data = False
+                if isinstance(value, dict):
+                    has_data = any(v is not None for v in value.values())
+                elif value is not None:
+                    has_data = True
+                if has_data:
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data, # Primary device data
+                            entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                            value_extractor=get_value_from_conceptual_measurements
+                        )
                     )
-                )
 
         # 3. Add sensors for CHİLD devices (e.g., battery or PV attached to an inverter)
         # These sensors will be associated with the PARENT's HA device entry.
@@ -176,6 +185,7 @@ async def async_setup_entry(
             child_properties = child_device_data.get("properties", {})
             child_node_type = child_properties.get("nodeType")
             child_info_block = child_properties.get("info", {})
+            child_latest_data = child_device_data.get("_latest_data", {})
 
             # 3a. Common sensors for the child device (from its own info block)
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in SENSOR_DESCRIPTIONS_COMMON:
@@ -194,15 +204,22 @@ async def async_setup_entry(
             # 3b. Conceptual measurement sensors for the child device
             if child_node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
                 for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[child_node_type]:
-                    entities_to_add.append(
-                        EnirisHacsSensor(
-                            coordinator,
-                            device_data, # Parent device data for HA device linking
-                            child_device_data=child_device_data, # Actual data source for this sensor
-                            entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=get_value_from_conceptual_measurements
+                    value = child_latest_data.get(m_key)
+                    has_data = False
+                    if isinstance(value, dict):
+                        has_data = any(v is not None for v in value.values())
+                    elif value is not None:
+                        has_data = True
+                    if has_data:
+                        entities_to_add.append(
+                            EnirisHacsSensor(
+                                coordinator,
+                                device_data, # Parent device data for HA device linking
+                                child_device_data=child_device_data, # Actual data source for this sensor
+                                entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                                value_extractor=get_value_from_conceptual_measurements
+                            )
                         )
-                    )
 
     if entities_to_add:
         _LOGGER.info("Adding %s sensor entities.", len(entities_to_add))
@@ -281,21 +298,26 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
 
     def _update_internal_state(self) -> None:
         """Update the internal state of the sensor from the current device data."""
-        # This uses the device data passed during __init__ or refreshed from coordinator
         current_device_data_for_sensor = self._get_current_device_data_from_coordinator()
         if current_device_data_for_sensor is None:
             self._attr_native_value = None
             _LOGGER.debug("Sensor %s: No current data from coordinator.", self.unique_id)
             return
 
-        # Get the latest telemetry data
         latest_data = current_device_data_for_sensor.get("_latest_data", {})
-        
+
         # For state of charge, scale from 0-1 to 0-100
         if self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
-            self._attr_native_value = latest_data[self._value_key] * 100
+            value = latest_data[self._value_key].get("latest") if isinstance(latest_data[self._value_key], dict) else latest_data[self._value_key]
+            self._attr_native_value = value * 100 if value is not None else None
+        # For energy delta fields, use the 'sum' value
+        elif self._value_key.endswith("EnergyDeltaTot_Wh") or self._value_key.endswith("chargedEnergyDeltaTot_Wh") or self._value_key.endswith("dischargedEnergyDeltaTot_Wh"):
+            value = latest_data.get(self._value_key, {}).get("sum") if isinstance(latest_data.get(self._value_key), dict) else None
+            self._attr_native_value = value
+        # For all other fields, use the 'latest' value if available
         else:
-            self._attr_native_value = latest_data.get(self._value_key)
+            value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
+            self._attr_native_value = value
 
         # Set the last update time if we have a timestamp
         if "timestamp" in latest_data:
