@@ -129,14 +129,18 @@ class EnirisHacsApiClient:
         _LOGGER.info("Attempting to get access token.")
         headers = {"Authorization": f"Bearer {self._refresh_token}"}
         try:
-            response_data = await self._request("GET", ACCESS_TOKEN_URL, headers=headers)
-            if response_data and "accessToken" in response_data:
-                self._access_token = response_data["accessToken"]
-                # Optionally handle "expiresIn" if provided by API to manage token lifecycle
-                # self._access_token_expires_at = time.time() + response_data.get("expiresIn", 3600)
-                _LOGGER.info("Successfully obtained access token.")
+            response_data = await self._request("GET", ACCESS_TOKEN_URL, headers=headers, is_text_response=True)
+            if isinstance(response_data, str):
+                # Handle plain text response
+                self._access_token = response_data.strip().strip('"')
+                _LOGGER.info("Successfully obtained access token from text response.")
                 return self._access_token
-            _LOGGER.error("Failed to get access token: 'accessToken' not in response or empty response. Response: %s", response_data)
+            elif isinstance(response_data, dict) and "accessToken" in response_data:
+                # Handle JSON response
+                self._access_token = response_data["accessToken"]
+                _LOGGER.info("Successfully obtained access token from JSON response.")
+                return self._access_token
+            _LOGGER.error("Failed to get access token: Invalid response format. Response: %s", response_data)
             raise EnirisHacsAuthError("Failed to get access token: Invalid response format")
         except EnirisHacsApiError as e:
             _LOGGER.error("Error obtaining access token: %s", e)
