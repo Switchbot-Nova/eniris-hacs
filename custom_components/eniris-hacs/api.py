@@ -61,7 +61,11 @@ class EnirisHacsApiClient:
                 if response.status == 200 or response.status == 201:
                     if is_text_response:
                         return await response.text()
-                    return await response.json()
+                    try:
+                        return await response.json()
+                    except Exception as e:
+                        _LOGGER.warning("Failed to parse JSON response: %s. Falling back to text response.", e)
+                        return await response.text()
                 elif response.status in (401, 403):
                     _LOGGER.error(
                         "Authentication error %s for %s: %s",
@@ -102,7 +106,8 @@ class EnirisHacsApiClient:
                 "POST", LOGIN_URL, headers=HEADER_CONTENT_TYPE_JSON, data=payload, is_text_response=True
             )
             if response_text:
-                self._refresh_token = response_text.strip()
+                # Clean up the response text - remove any whitespace and quotes
+                self._refresh_token = response_text.strip().strip('"')
                 _LOGGER.info("Successfully obtained refresh token.")
                 return self._refresh_token
             _LOGGER.error("Failed to get refresh token: Empty response.")
