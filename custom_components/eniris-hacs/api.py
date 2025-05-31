@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone, timedelta
+import copy
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError, ClientResponseError
@@ -510,8 +511,8 @@ class EnirisHacsApiClient:
                     # Mark parent as updated if any child updated
                     device_data["_children_last_updated"] = datetime.now(timezone.utc).isoformat()
 
-                    _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
-                    processed_devices[node_id] = device_data
+                    # Assign a deepcopy to ensure object reference changes for HA updates
+                    processed_devices[node_id] = copy.deepcopy(device_data)
                 except Exception as e:
                     _LOGGER.error("Error getting latest data for device %s: %s", node_id, e)
 
@@ -531,3 +532,4 @@ class EnirisHacsApiClient:
         """Close the client session."""
         await self._session.close()
 
+l
