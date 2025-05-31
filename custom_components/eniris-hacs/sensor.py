@@ -77,7 +77,8 @@ CONCEPTUAL_MEASUREMENT_SENSORS = {
         ("actualPowerTot_W", "Total Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:solar-power", None),
         ("exportedEnergyDeltaTot_Wh", "Exported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-export", None),
         ("importedEnergyDeltaTot_Wh", "Imported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-import", None),
-        # "faultCodes1" - could be a diagnostic sensor
+        # New sensor for state of charge from child battery
+        ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
     ],
     DEVICE_TYPE_BATTERY: [
         ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
@@ -413,9 +414,19 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
                 else:  # discharging_power
                     self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         # For state of charge, scale from 0-1 to 0-100
-        elif self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
-            value = latest_data[self._value_key].get("latest") if isinstance(latest_data[self._value_key], dict) else latest_data[self._value_key]
-            self._attr_native_value = value * 100 if value is not None else None
+        elif self._value_key == "stateOfCharge_frac":
+            if self.primary_device_data.get("properties", {}).get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
+                # Retrieve state of charge from child battery
+                for child in self.primary_device_data.get("_processed_children", []):
+                    if child.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                        battery_data = child.get("_latest_data", {})
+                        value = battery_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(battery_data.get("stateOfCharge_frac"), dict) else battery_data.get("stateOfCharge_frac")
+                        if value is not None:
+                            self._attr_native_value = value * 100
+                            break
+            else:
+                value = latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(latest_data.get("stateOfCharge_frac"), dict) else latest_data.get("stateOfCharge_frac")
+                self._attr_native_value = value * 100 if value is not None else None
         # For energy delta fields, use the 'sum' value
         elif self._value_key.endswith("EnergyDeltaTot_Wh") or self._value_key.endswith("chargedEnergyDeltaTot_Wh") or self._value_key.endswith("dischargedEnergyDeltaTot_Wh"):
             value = latest_data.get(self._value_key, {}).get("sum") if isinstance(latest_data.get(self._value_key), dict) else None
