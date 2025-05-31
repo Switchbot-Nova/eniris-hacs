@@ -248,7 +248,7 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
     @property
     def entity_category(self) -> Optional[str]:
         """Return the entity category."""
-        return self_entity_category_override
+        return self._entity_category_override
     
     @property
     def native_value(self) -> Any:
@@ -263,11 +263,19 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         # This uses the device data passed during __init__ or refreshed from coordinator
         current_device_data_for_sensor = self._get_current_device_data_from_coordinator()
         if current_device_data_for_sensor is None:
-            self._attr_native_value = None # Or some default indicating unavailability
+            self._attr_native_value = None
             _LOGGER.debug("Sensor %s: No current data from coordinator.", self.unique_id)
             return
 
-        self._attr_native_value = self._value_extractor(current_device_data_for_sensor, self._value_key)
+        # Get the latest telemetry data
+        latest_data = current_device_data_for_sensor.get("_latest_data", {})
+        
+        # For state of charge, scale from 0-1 to 0-100
+        if self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
+            self._attr_native_value = latest_data[self._value_key] * 100
+        else:
+            self._attr_native_value = latest_data.get(self._value_key)
+
         _LOGGER.debug("Sensor %s updated native_value to: %s", self.unique_id, self._attr_native_value)
 
 

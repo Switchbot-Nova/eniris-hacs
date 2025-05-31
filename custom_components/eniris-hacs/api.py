@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError, ClientResponseError
@@ -13,6 +14,10 @@ from .const import (
     LOGIN_URL,
     SUPPORTED_NODE_TYPES,
     HEADER_CONTENT_TYPE_JSON,
+    DEVICE_TYPE_HYBRID_INVERTER,
+    DEVICE_TYPE_SOLAR_OPTIMIZER,
+    DEVICE_TYPE_POWER_METER,
+    DEVICE_TYPE_BATTERY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -190,6 +195,102 @@ class EnirisHacsApiClient:
                 return []
             raise # Re-raise original error if not auth or if retry failed
 
+    async def get_device_telemetry(self, node_id: str, measurement: str, fields: List[str]) -> Dict[str, Any]:
+        """Get telemetry data for a specific device."""
+        access_token = await self.ensure_access_token()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # Get the last 5 minutes of data
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(minutes=5)
+
+        body = [{
+            "select": fields,
+            "from": {
+                "database": "beauvent",
+                "retentionPolicy": "rp_one_m",
+                "measurement": measurement
+            },
+            "where": {
+                "time": [
+                    {"operator": ">=", "value": int(start_time.timestamp() * 1000)},
+                    {"operator": "<=", "value": int(end_time.timestamp() * 1000)}
+                ],
+                "tags": {"nodeId": node_id}
+            }
+        }]
+
+        try:
+            response = await self._request(
+                "POST",
+                "https://api.eniris.be/v1/telemetry/query",
+                headers=headers,
+                data=body
+            )
+            
+            if not response or not isinstance(response, list) or len(response) == 0:
+                _LOGGER.warning("No telemetry data received for device %s", node_id)
+                return {}
+
+            # Get the first (and should be only) series
+            series = response[0].get("series", [])
+            if not series:
+                _LOGGER.warning("No series data in telemetry response for device %s", node_id)
+                return {}
+
+            # Get the latest values (last entry in the values array)
+            values = series[0].get("values", [])
+            if not values:
+                _LOGGER.warning("No values in telemetry response for device %s", node_id)
+                return {}
+
+            # Get the latest value
+            latest_values = values[-1]
+            columns = series[0].get("columns", [])
+
+            # Create a dictionary of field names to values
+            result = {}
+            for i, column in enumerate(columns):
+                if column != "time":  # Skip the time column
+                    result[column] = latest_values[i]
+
+            return result
+
+        except EnirisHacsApiError as e:
+            _LOGGER.error("Error fetching telemetry data for device %s: %s", node_id, e)
+            return {}
+
+    async def get_device_latest_data(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Get the latest telemetry data for a device based on its nodeInfluxSeries configuration."""
+        properties = device_data.get("properties", {})
+        node_id = properties.get("nodeId")
+        if not node_id:
+            return {}
+
+        # Get the nodeInfluxSeries configuration
+        series_configs = properties.get("nodeInfluxSeries", [])
+        if not series_configs:
+            return {}
+
+        latest_data = {}
+        for series_config in series_configs:
+            measurement = series_config.get("measurement")
+            fields = series_config.get("fields", [])
+            
+            if not measurement or not fields:
+                continue
+
+            # Get telemetry data for this series
+            telemetry_data = await self.get_device_telemetry(node_id, measurement, fields)
+            
+            # Add the data to our result
+            latest_data.update(telemetry_data)
+
+        return latest_data
+
     async def get_processed_devices(self) -> Dict[str, Dict[str, Any]]:
         """Get devices and process them for hierarchy and supported types."""
         raw_devices = await self.get_devices()
@@ -243,6 +344,15 @@ class EnirisHacsApiClient:
                 is_primary = not is_child_of_hybrid
 
             if is_primary:
+                # Get latest telemetry data for this device
+                latest_data = await self.get_device_latest_data(device_data)
+                device_data["_latest_data"] = latest_data
+
+                # Get latest telemetry data for children
+                for child_device in device_data["_processed_children"]:
+                    child_latest_data = await self.get_device_latest_data(child_device)
+                    child_device["_latest_data"] = child_latest_data
+
                 _LOGGER.debug("Adding device %s (type: %s) as a primary HA device.", node_id, node_type)
                 processed_devices[node_id] = device_data
 
