@@ -1,6 +1,13 @@
+# ⚠️ Warning: Community Integration – Not Officially Supported by Eniris
+
+This integration is open-source and **not part of official Eniris support**. If you need help, please [create an issue on GitHub](https://github.com/Switchbot-Nova/eniris-hacs/issues). **Do not contact Eniris support for issues with this integration; tickets made at eniris.io will be closed without notice.**
+
 # Eniris HACS Integration
 
 This is a custom Home Assistant integration for Eniris energy monitoring devices, including hybrid inverters, batteries, power meters, and solar optimizers. It allows you to monitor real-time and historical energy data from your Eniris-connected devices directly in Home Assistant.
+
+> **Note:**
+> If you have multiple controllers linked to your Eniris account, you should create a separate Eniris account for each controller to use with this Home Assistant integration. If you use your main account, the integration will add all devices from all controllers.
 
 ## Features
 - Automatic device discovery (hybrid inverter, battery, power meter, solar optimizer)
@@ -51,4 +58,4 @@ If your device does not provide a cumulative energy value, you can use Home Assi
 Pull requests and issues are welcome! Please open an issue if you find a bug or have a feature request.
 
 ## License
-GPL-3.0 license 
+MIT 
