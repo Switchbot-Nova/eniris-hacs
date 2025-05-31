@@ -207,28 +207,57 @@ class EnirisHacsApiClient:
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(minutes=5)
 
-        body = [{
-            "select": fields,
-            "from": {
-                "database": "beauvent",
-                "retentionPolicy": "rp_one_m",
-                "measurement": measurement
-            },
-            "where": {
-                "time": [
-                    {"operator": ">=", "value": int(start_time.timestamp() * 1000)},
-                    {"operator": "<=", "value": int(end_time.timestamp() * 1000)}
-                ],
-                "tags": {"nodeId": node_id}
-            }
-        }]
+        # Create queries for each field
+        queries = []
+        for field in fields:
+            # Query for the latest value
+            queries.append({
+                "select": [field],
+                "from": {
+                    "namespace": {
+                        "version": "1",
+                        "database": "beauvent",
+                        "retentionPolicy": "rp_one_m"
+                    },
+                    "measurement": measurement
+                },
+                "where": {
+                    "time": [
+                        {"operator": ">=", "value": int(start_time.timestamp() * 1000)},
+                        {"operator": "<", "value": int(end_time.timestamp() * 1000)}
+                    ],
+                    "tags": {"nodeId": node_id}
+                },
+                "limit": 1,
+                "orderBy": "DESC"
+            })
+            
+            # Query for the sum in the time range
+            queries.append({
+                "select": [{"field": field, "function": "sum"}],
+                "from": {
+                    "namespace": {
+                        "version": "1",
+                        "database": "beauvent",
+                        "retentionPolicy": "rp_one_m"
+                    },
+                    "measurement": measurement
+                },
+                "where": {
+                    "time": [
+                        {"operator": ">=", "value": int(start_time.timestamp() * 1000)},
+                        {"operator": "<", "value": int(end_time.timestamp() * 1000)}
+                    ],
+                    "tags": {"nodeId": node_id}
+                }
+            })
 
         try:
             response = await self._request(
                 "POST",
                 "https://api.eniris.be/v1/telemetry/query",
                 headers=headers,
-                data=body
+                data=queries
             )
             
             if not response or not isinstance(response, list) or len(response) == 0:
@@ -271,6 +300,7 @@ class EnirisHacsApiClient:
             if latest_timestamp:
                 result["timestamp"] = datetime.fromtimestamp(int(latest_timestamp) / 1000, timezone.utc)
             
+            _LOGGER.debug("Telemetry data for device %s: %s", node_id, result)
             return result
 
         except Exception as e:
