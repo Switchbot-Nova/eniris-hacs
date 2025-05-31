@@ -366,10 +366,10 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         # Custom logic for battery/hybrid inverter charging/discharging power
         elif self._value_key == "charging_power":
             value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
-            self._attr_native_value = abs(value) if value is not None and value < 0 else 0
+            self._attr_native_value = value if value is not None and value > 0 else 0
         elif self._value_key == "discharging_power":
             value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
-            self._attr_native_value = value if value is not None and value > 0 else 0
+            self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         # For state of charge, scale from 0-1 to 0-100
         elif self._value_key == "stateOfCharge_frac" and self._value_key in latest_data:
             value = latest_data[self._value_key].get("latest") if isinstance(latest_data[self._value_key], dict) else latest_data[self._value_key]
