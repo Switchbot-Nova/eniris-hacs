@@ -190,8 +190,8 @@ async def async_setup_entry(
                             value_extractor=None # We'll handle in the sensor class
                         )
                     )
-        # 1c. Add Charging/Discharging Power sensors for all batteries
-        if node_type == DEVICE_TYPE_BATTERY:
+        # 1c. Add Charging/Discharging Power sensors for all batteries and hybrid inverters
+        if node_type in [DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
                 value = latest_data.get("actualPowerTot_W")
                 has_data = False
