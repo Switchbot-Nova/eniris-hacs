@@ -167,44 +167,30 @@ async def async_setup_entry(
                         coordinator,
                         device_data, # Primary device data
                         entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                        value_extractor=get_value_from_info,
                         is_info_sensor=True
                     )
                 )
         
         # 1b. Add Import/Export Power sensors for all power meters, PV, and battery
-        if node_type in [DEVICE_TYPE_POWER_METER, DEVICE_TYPE_SOLAR_OPTIMIZER, DEVICE_TYPE_BATTERY]:
-            for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in IMPORT_EXPORT_POWER_SENSORS:
+        if node_type in [DEVICE_TYPE_POWER_METER, DEVICE_TYPE_SOLAR_OPTIMIZER, DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
+            for entity_desc_tuple in IMPORT_EXPORT_POWER_SENSORS:
                 entities_to_add.append(
                     EnirisHacsSensor(
                         coordinator,
                         device_data,
-                        entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                        value_extractor=None # We'll handle in the sensor class
+                        entity_description_tuple=entity_desc_tuple,
                     )
                 )
         # 1c. Add Charging/Discharging Power sensors for all batteries and hybrid inverters
         if node_type in [DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
-            if node_type == DEVICE_TYPE_HYBRID_INVERTER:
-                for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
-                    entities_to_add.append(
-                        EnirisHacsSensor(
-                            coordinator,
-                            device_data,  # Parent is inverter, but value comes from children
-                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=None
-                        )
+            for entity_desc_tuple in BATTERY_CHARGE_DISCHARGE_SENSORS:
+                entities_to_add.append(
+                    EnirisHacsSensor(
+                        coordinator,
+                        device_data,
+                        entity_description_tuple=entity_desc_tuple,
                     )
-            else:
-                for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
-                    entities_to_add.append(
-                        EnirisHacsSensor(
-                            coordinator,
-                            device_data,
-                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=None
-                        )
-                    )
+                )
 
         # 2. Add sensors based on telemetry measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
@@ -248,16 +234,16 @@ async def async_setup_entry(
 
             # 3a. Common sensors for the child device (from its own info block)
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in SENSOR_DESCRIPTIONS_COMMON:
-                entities_to_add.append(
-                    EnirisHacsSensor(
-                        coordinator,
-                        device_data, # Parent device data for HA device linking
-                        child_device_data=child_device_data, # Actual data source for this sensor
-                        entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                        value_extractor=get_value_from_info, # Use info from child_device_data
-                        is_info_sensor=True
+                if get_value_from_info(child_device_data, key) is not None:
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data, # Parent device data for HA device linking
+                            child_device_data=child_device_data, # Actual data source for this sensor
+                            entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
+                            is_info_sensor=True
+                        )
                     )
-                )
             # 3b. Telemetry measurement sensors for the child device
             if child_node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
                 for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[child_node_type]:
@@ -302,7 +288,6 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         coordinator: DataUpdateCoordinator,
         primary_device_data: Dict[str, Any],
         entity_description_tuple: Tuple, # (base_key, name_suffix, unit, dev_class, state_class, icon, ent_cat)
-        # value_extractor: Callable[[Dict[str, Any], str], Any], # No longer directly used by sensor for value
         retention_policy_tag: Optional[str] = None, # e.g., "rp_one_m" or "rp_one_s"
         data_type_tag: str = "latest", # "latest" or "sum"
         child_device_data: Optional[Dict[str, Any]] = None,
