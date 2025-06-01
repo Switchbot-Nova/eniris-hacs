@@ -79,6 +79,9 @@ CONCEPTUAL_MEASUREMENT_SENSORS = {
         ("importedEnergyDeltaTot_Wh", "Imported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-import", None),
         # New sensor for state of charge from child battery
         ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
+        # New sensors for summed charging/discharging power of child batteries
+        ("summed_child_battery_charging_power", "Summed Battery Charging Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-arrow-up-outline", None),
+        ("summed_child_battery_discharging_power", "Summed Battery Discharging Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-arrow-down-outline", None),
     ],
     DEVICE_TYPE_BATTERY: [
         ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
@@ -171,16 +174,21 @@ async def async_setup_entry(
                     )
                 )
         
-        # 1b. Add Import/Export Power sensors for all power meters, PV, and battery
+        # 1b. Add Import/Export Power sensors for all power meters, PV, battery and hybrid inverters
         if node_type in [DEVICE_TYPE_POWER_METER, DEVICE_TYPE_SOLAR_OPTIMIZER, DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
-            for entity_desc_tuple in IMPORT_EXPORT_POWER_SENSORS:
-                entities_to_add.append(
-                    EnirisHacsSensor(
-                        coordinator,
-                        device_data,
-                        entity_description_tuple=entity_desc_tuple,
+            for entity_desc_tuple in IMPORT_EXPORT_POWER_SENSORS: # (base_key, name_suffix, unit, dev_class, state_class, icon, ent_cat)
+                # These are special base_keys ("import_power", "export_power") handled in _update_internal_state
+                # Create for both rp_one_m and rp_one_s
+                for rp_tag in ["rp_one_m", "rp_one_s"]:
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data,
+                            entity_description_tuple=entity_desc_tuple,
+                            retention_policy_tag=rp_tag,
+                            data_type_tag="latest" # Import/Export power is always a 'latest' type value
+                        )
                     )
-                )
         # 1c. Add Charging/Discharging Power sensors for all batteries and hybrid inverters
         if node_type in [DEVICE_TYPE_BATTERY, DEVICE_TYPE_HYBRID_INVERTER]:
             for entity_desc_tuple in BATTERY_CHARGE_DISCHARGE_SENSORS:
@@ -386,108 +394,156 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         """Update the internal state of the sensor from the current device data."""
         current_device_data_for_sensor = self._get_current_device_data_from_coordinator()
         if current_device_data_for_sensor is None:
-            self._attr_native_value = None
-            # _LOGGER.debug("Sensor %s: No current data from coordinator.", self.unique_id) # Reduced verbosity
+            # Do not change state if coordinator data for this device is missing entirely.
+            # Availability is handled by the EnirisHacsEntity base class.
+            # _LOGGER.debug("Sensor %s: No current data from coordinator for this device. State not changed.", self.unique_id)
             return
 
         latest_data_source = current_device_data_for_sensor.get("_latest_data", {})
         current_properties = current_device_data_for_sensor.get("properties", {})
 
-        # For static info sensors
+        # For static info sensors, value is set once at init mostly or if info itself changes.
+        # These are less affected by partial telemetry updates.
         if self._is_info_sensor:
-            self._attr_native_value = get_value_from_info(current_device_data_for_sensor, self._base_value_key)
-            # _LOGGER.debug("Sensor %s (info) updated native_value to: %s", self.unique_id, self._attr_native_value)
+            new_value = get_value_from_info(current_device_data_for_sensor, self._base_value_key)
+            # Only update if it genuinely changed, though info is usually static.
+            if self._attr_native_value != new_value:
+                 self._attr_native_value = new_value
             return
 
         # --- Special Handling for specific sensor types ---
-        # These might need to combine data or look at specific children.
-        # Default retention policy for these specific hardcoded sensors will be rp_one_m latest unless specified.
-        # This part needs careful review if rp_one_s versions of these specific sensors are needed.
+        # These sensors derive their state from one or more telemetry points.
+        # They should only update if the specific underlying data they need is present in this update.
 
-        # Import/Export Power (typically uses rp_one_m latest of actualPowerTot_W)
-        if self._base_value_key == "import_power": # This is a derived sensor name, not a direct API key
-            # Assumes 'actualPowerTot_W' is the source and we use 'rp_one_m_latest' by default for this logic
-            value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest")
-            self._attr_native_value = value if value is not None and value > 0 else 0
-        elif self._base_value_key == "export_power": # Derived sensor name
-            value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest")
-            self._attr_native_value = abs(value) if value is not None and value < 0 else 0
+        new_sensor_value: Any = None # Temporary variable to hold the potential new value
+        value_is_available_for_update = False # Flag to track if we should update state
+
+        # Import/Export Power
+        if self._base_value_key == "import_power":
+            value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", self._retention_policy_tag, "latest")
+            if value is not None:
+                new_sensor_value = value if value > 0 else 0
+                value_is_available_for_update = True
+        elif self._base_value_key == "export_power":
+            value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", self._retention_policy_tag, "latest")
+            if value is not None:
+                new_sensor_value = abs(value) if value < 0 else 0
+                value_is_available_for_update = True
         
-        # Charging/Discharging Power (derived, complex logic)
+        # Charging/Discharging Power
         elif self._base_value_key in ("charging_power", "discharging_power"):
             node_type_of_current_device = current_properties.get("nodeType")
             total_power = 0
-            processed_children = current_device_data_for_sensor.get("_processed_children", [])
+            power_data_found = False # Did we find any relevant power data to make a calculation?
 
             if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
-                for child_block in processed_children:
+                # For Hybrid Inverters, sums power from child batteries.
+                # It should use the *derived sensor's* RP tag, not hardcode one for children.
+                # However, these are specific summary sensors, not direct telemetry.
+                # The current BATTERY_CHARGE_DISCHARGE_SENSORS are general for the device.
+                # Let's assume these still use rp_one_m by convention as they summarize.
+                # If rp_one_s versions of *these specific summary sensors* are needed,
+                # they'd need separate base_keys and instantiation in async_setup_entry.
+                # For now, sticking to original intent of these as rp_one_m summaries.
+                for child_block in current_device_data_for_sensor.get("_processed_children", []):
                     if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
                         battery_latest_data = child_block.get("_latest_data", {})
-                        # Defaulting to rp_one_m for battery contribution to hybrid inverter's charge/discharge
-                        value = self._get_sensor_value_from_latest_data(battery_latest_data, "actualPowerTot_W", "rp_one_m", "latest")
+                        value = self._get_sensor_value_from_latest_data(battery_latest_data, "actualPowerTot_W", "rp_one_m", "latest") # Using rp_one_m for this summary
                         if value is not None:
                             total_power += value
+                            power_data_found = True
             elif node_type_of_current_device == DEVICE_TYPE_BATTERY:
-                # Defaulting to rp_one_m for standalone battery's charge/discharge
-                value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest")
+                # For standalone batteries, uses its own power.
+                value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest") # Using rp_one_m for this summary
                 if value is not None:
-                     total_power = value # total_power is just this battery's power
-
-            if self._base_value_key == "charging_power":
-                self._attr_native_value = total_power if total_power > 0 else 0
-            else:  # discharging_power
-                self._attr_native_value = abs(total_power) if total_power < 0 else 0
+                    total_power = value
+                    power_data_found = True
+            
+            if power_data_found:
+                if self._base_value_key == "charging_power":
+                    new_sensor_value = total_power if total_power > 0 else 0
+                else:  # discharging_power
+                    new_sensor_value = abs(total_power) if total_power < 0 else 0
+                value_is_available_for_update = True
         
-        # State of Charge (derived, complex logic)
+        # State of Charge
         elif self._base_value_key == "stateOfCharge_frac":
+            # This sensor is instantiated once, expected to use rp_one_m by default.
             node_type_of_current_device = current_properties.get("nodeType")
-            soc_value = None
-            processed_children = current_device_data_for_sensor.get("_processed_children", [])
+            soc_value_from_api = None
 
             if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
-                for child_block in processed_children:
+                for child_block in current_device_data_for_sensor.get("_processed_children", []):
                     if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
                         battery_latest_data = child_block.get("_latest_data", {})
-                        # Defaulting to rp_one_m for battery SoC contribution
-                        value = self._get_sensor_value_from_latest_data(battery_latest_data, "stateOfCharge_frac", "rp_one_m", "latest")
-                        if value is not None:
-                            soc_value = value * 100
+                        soc_value_from_api = self._get_sensor_value_from_latest_data(battery_latest_data, "stateOfCharge_frac", "rp_one_m", "latest")
+                        if soc_value_from_api is not None:
                             break 
-            else: # Assumed to be a standalone battery or a direct child battery sensor
-                # Defaulting to rp_one_m for standalone/child battery SoC
-                value = self._get_sensor_value_from_latest_data(latest_data_source, "stateOfCharge_frac", "rp_one_m", "latest")
-                if value is not None:
-                    soc_value = value * 100
-            self._attr_native_value = soc_value
+            else: # Standalone battery
+                soc_value_from_api = self._get_sensor_value_from_latest_data(latest_data_source, "stateOfCharge_frac", self._retention_policy_tag or "rp_one_m", "latest")
+            
+            if soc_value_from_api is not None:
+                new_sensor_value = soc_value_from_api * 100
+                value_is_available_for_update = True
 
+        # Summed real-time charging power of child batteries for a Hybrid Inverter
+        elif self._base_value_key == "summed_child_battery_charging_power" and current_properties.get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
+            net_summed_child_battery_power = 0
+            found_any_battery_data = False
+            for child_block in current_device_data_for_sensor.get("_processed_children", []):
+                if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                    battery_latest_data = child_block.get("_latest_data", {})
+                    power_value = self._get_sensor_value_from_latest_data(battery_latest_data, "actualPowerTot_W", self._retention_policy_tag, "latest")
+                    if power_value is not None:
+                        net_summed_child_battery_power += power_value
+                        found_any_battery_data = True
+            if found_any_battery_data:
+                new_sensor_value = net_summed_child_battery_power if net_summed_child_battery_power > 0 else 0
+                value_is_available_for_update = True
+
+        # Summed real-time discharging power of child batteries for a Hybrid Inverter
+        elif self._base_value_key == "summed_child_battery_discharging_power" and current_properties.get("nodeType") == DEVICE_TYPE_HYBRID_INVERTER:
+            net_summed_child_battery_power = 0
+            found_any_battery_data = False
+            for child_block in current_device_data_for_sensor.get("_processed_children", []):
+                if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
+                    battery_latest_data = child_block.get("_latest_data", {})
+                    power_value = self._get_sensor_value_from_latest_data(battery_latest_data, "actualPowerTot_W", self._retention_policy_tag, "latest")
+                    if power_value is not None:
+                        net_summed_child_battery_power += power_value
+                        found_any_battery_data = True
+            if found_any_battery_data:
+                new_sensor_value = abs(net_summed_child_battery_power) if net_summed_child_battery_power < 0 else 0
+                value_is_available_for_update = True
+        
         # --- Generic Handling for telemetry data based on retention_policy_tag and data_type_tag ---
         else:
-            # This handles all sensors derived from CONCEPTUAL_MEASUREMENT_SENSORS
-            # where self._retention_policy_tag and self._data_type_tag are set.
-            if self._retention_policy_tag and self._data_type_tag:
-                self._attr_native_value = self._get_sensor_value_from_latest_data(
+            if self._retention_policy_tag and self._data_type_tag: # Ensure it's a telemetry sensor
+                value = self._get_sensor_value_from_latest_data(
                     latest_data_source,
                     self._base_value_key,
                     self._retention_policy_tag,
                     self._data_type_tag
                 )
+                if value is not None:
+                    new_sensor_value = value
+                    value_is_available_for_update = True
+                # If value is None, we don't set value_is_available_for_update = True, so state is preserved.
             else:
-                # Fallback for sensors not covered by above, or if tags are missing (should ideally not happen for telemetry)
-                # This might pick up older direct values if API structure was simpler previously for some keys
-                raw_value = latest_data_source.get(self._base_value_key)
-                if isinstance(raw_value, dict): # If it's a dict, it's likely the new structure, but we lack tags
-                    _LOGGER.warning(
-                        "Sensor %s (%s) is trying to access telemetry data but lacks specific retention/data type tags. Check setup.",
-                        self.unique_id, self._base_value_key
-                    )
-                    self._attr_native_value = None # Avoid picking ambiguous data
-                else: # Assume it's a direct value (old structure or simple non-timeseries data)
-                     self._attr_native_value = raw_value
+                # This case is for sensors that might not be info sensors and don't have RP tags.
+                # Potentially problematic or legacy. Log if necessary or handle if such sensors exist.
+                # For now, if it falls here, it won't update unless new_sensor_value is explicitly set.
+                # _LOGGER.warning("Sensor %s (%s) lacks RP/data tags and is not an info sensor. State may not update as expected.", self.unique_id, self._base_value_key)
+                pass # No update unless specific logic above caught it.
 
 
-        # _LOGGER.debug("Sensor %s updated native_value to: %s", self.unique_id, self._attr_native_value) # Reduced verbosity
-
-
+        if value_is_available_for_update:
+            if self._attr_native_value != new_sensor_value:
+                self._attr_native_value = new_sensor_value
+                # _LOGGER.debug("Sensor %s updated native_value to: %s", self.unique_id, self._attr_native_value) # Optional: for debugging
+        # else:
+            # _LOGGER.debug("Sensor %s: No new specific data available in this update cycle. State preserved: %s", self.unique_id, self._attr_native_value) # Optional: for debugging
+            
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
