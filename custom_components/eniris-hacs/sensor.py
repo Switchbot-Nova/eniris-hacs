@@ -298,9 +298,13 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         current_device_props = (child_device_data or primary_device_data).get("properties", {})
         device_name_prefix = current_device_props.get("name", current_device_props.get("nodeId", "Unknown Device"))
         
-        self.entity_id = f"sensor.{DOMAIN}_{current_device_props.get('nodeId', '').replace('-', '_')}_{self._value_key}".lower()
+        # Add _realtime suffix to entity_id and unique_id for real-time sensors
+        is_realtime = self._name_suffix.startswith("Realtime")
+        id_suffix = "_realtime" if is_realtime else ""
+        
+        self.entity_id = f"sensor.{DOMAIN}_{current_device_props.get('nodeId', '').replace('-', '_')}_{self._value_key}{id_suffix}".lower()
         self._attr_name = f"{device_name_prefix} {self._name_suffix}"
-        self._attr_unique_id = f"{current_device_props.get('nodeId')}_{self._value_key}"
+        self._attr_unique_id = f"{current_device_props.get('nodeId')}_{self._value_key}{id_suffix}"
 
         self._update_internal_state() # Initial update
 
