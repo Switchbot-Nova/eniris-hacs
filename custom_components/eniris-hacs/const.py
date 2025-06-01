@@ -17,7 +17,7 @@ DEVICES_URL = f"{API_BASE_URL}/device"
 
 # Update interval for polling data (in seconds)
 # Adjust as needed, considering API rate limits
-SCAN_INTERVAL_SECONDS = 60  # 1 minute
+SCAN_INTERVAL_SECONDS = 5  # Formerly 1 minute, now 5 seconds for frequent rp_one_s updates
 
 # Supported device types
 SUPPORTED_NODE_TYPES = [

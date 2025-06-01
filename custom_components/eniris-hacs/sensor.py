@@ -206,19 +206,40 @@ async def async_setup_entry(
                         )
                     )
 
-        # 2. Add sensors based on conceptual measurements for the primary device
+        # 2. Add sensors based on telemetry measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
             for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[node_type]:
-                entities_to_add.append(
-                    EnirisHacsSensor(
-                        coordinator,
-                        device_data, # Primary device data
-                        entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                        value_extractor=get_value_from_conceptual_measurements
-                    )
-                )
+                entity_desc_tuple_base = (m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat)
+                
+                # Determine data type: sum for energy, latest for others
+                data_type_for_m_key = "sum" if "Energy" in m_key or "Energy" in name_suffix else "latest"
 
-        # 3. Add sensors for CHİLD devices (e.g., battery or PV attached to an inverter)
+                # Create sensors for each retention policy defined in api.py (e.g., rp_one_m, rp_one_s)
+                # Assuming api.py defines retention_policies = ["rp_one_m", "rp_one_s"]
+                # If stateOfCharge_frac, only create one sensor (uses rp_one_m by default in class)
+                if m_key == "stateOfCharge_frac":
+                    entities_to_add.append(
+                        EnirisHacsSensor(
+                            coordinator,
+                            device_data,
+                            entity_description_tuple=entity_desc_tuple_base,
+                            # retention_policy_tag is None, uses default rp_one_m logic in class
+                            data_type_tag="latest" # SoC is always a latest value
+                        )
+                    )
+                else:
+                    for rp_tag in ["rp_one_m", "rp_one_s"]:
+                        entities_to_add.append(
+                            EnirisHacsSensor(
+                                coordinator,
+                                device_data, 
+                                entity_description_tuple=entity_desc_tuple_base,
+                                retention_policy_tag=rp_tag,
+                                data_type_tag=data_type_for_m_key
+                            )
+                        )
+
+        # 3. Add sensors for CHILD devices (e.g., battery or PV attached to an inverter)
         for child_device_data in device_data.get("_processed_children", []):
             child_properties = child_device_data.get("properties", {})
             child_node_type = child_properties.get("nodeType")
@@ -237,18 +258,34 @@ async def async_setup_entry(
                         is_info_sensor=True
                     )
                 )
-            # 3b. Conceptual measurement sensors for the child device
+            # 3b. Telemetry measurement sensors for the child device
             if child_node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
                 for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[child_node_type]:
-                    entities_to_add.append(
-                        EnirisHacsSensor(
-                            coordinator,
-                            device_data, # Parent device data for HA device linking
-                            child_device_data=child_device_data, # Actual data source for this sensor
-                            entity_description_tuple=(m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
-                            value_extractor=get_value_from_conceptual_measurements
+                    entity_desc_tuple_base = (m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat)
+                    data_type_for_m_key = "sum" if "Energy" in m_key or "Energy" in name_suffix else "latest"
+
+                    if m_key == "stateOfCharge_frac": # SoC special handling for child
+                         entities_to_add.append(
+                            EnirisHacsSensor(
+                                coordinator,
+                                device_data, # Parent for linking
+                                child_device_data=child_device_data,
+                                entity_description_tuple=entity_desc_tuple_base,
+                                data_type_tag="latest"
+                            )
                         )
-                    )
+                    else:
+                        for rp_tag in ["rp_one_m", "rp_one_s"]:
+                            entities_to_add.append(
+                                EnirisHacsSensor(
+                                    coordinator,
+                                    device_data, # Parent device data for HA device linking
+                                    child_device_data=child_device_data, 
+                                    entity_description_tuple=entity_desc_tuple_base,
+                                    retention_policy_tag=rp_tag,
+                                    data_type_tag=data_type_for_m_key
+                                )
+                            )
 
     if entities_to_add:
         _LOGGER.info("Adding %s sensor entities.", len(entities_to_add))
@@ -264,31 +301,51 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         self,
         coordinator: DataUpdateCoordinator,
         primary_device_data: Dict[str, Any],
-        entity_description_tuple: Tuple, # (key, name_suffix, unit, dev_class, state_class, icon, ent_cat)
-        value_extractor: Callable[[Dict[str, Any], str], Any],
+        entity_description_tuple: Tuple, # (base_key, name_suffix, unit, dev_class, state_class, icon, ent_cat)
+        # value_extractor: Callable[[Dict[str, Any], str], Any], # No longer directly used by sensor for value
+        retention_policy_tag: Optional[str] = None, # e.g., "rp_one_m" or "rp_one_s"
+        data_type_tag: str = "latest", # "latest" or "sum"
         child_device_data: Optional[Dict[str, Any]] = None,
-        is_info_sensor: bool = False, # True if sensor value comes from 'info' block
+        is_info_sensor: bool = False, 
     ):
         """Initialize the sensor."""
         super().__init__(coordinator, primary_device_data, child_device_data)
         
-        self._value_key = entity_description_tuple[0]
+        self._base_value_key = entity_description_tuple[0] # e.g., "actualPowerTot_W"
         self._name_suffix = entity_description_tuple[1]
         self._unit = entity_description_tuple[2]
         self._device_class = entity_description_tuple[3]
         self._state_class = entity_description_tuple[4]
         self._icon_override = entity_description_tuple[5]
         self._entity_category_override = entity_description_tuple[6]
-        self._value_extractor = value_extractor
-        self._is_info_sensor = is_info_sensor # Static sensors from 'info' don't need frequent updates from coordinator's live data part
+        
+        self._retention_policy_tag = retention_policy_tag # e.g., "rp_one_m" or "rp_one_s" or None for info sensors
+        self._data_type_tag = data_type_tag # "latest" or "sum"
+        self._is_info_sensor = is_info_sensor
 
         # Determine the device name prefix (either from child or parent)
         current_device_props = (child_device_data or primary_device_data).get("properties", {})
         device_name_prefix = current_device_props.get("name", current_device_props.get("nodeId", "Unknown Device"))
         
-        self.entity_id = f"sensor.{DOMAIN}_{current_device_props.get('nodeId', '').replace('-', '_')}_{self._value_key}".lower()
-        self._attr_name = f"{device_name_prefix} {self._name_suffix}"
-        self._attr_unique_id = f"{current_device_props.get('nodeId')}_{self._value_key}"
+        # Construct a unique key part based on retention policy and data type
+        key_suffix = f"_{self._retention_policy_tag}_{self._data_type_tag}" if self._retention_policy_tag else ""
+        
+        # Adjust name suffix if it's an RP-specific sensor
+        name_suffix_adjusted = self._name_suffix
+        if self._retention_policy_tag == "rp_one_m":
+            name_suffix_adjusted = f"{self._name_suffix} (1m)"
+        elif self._retention_policy_tag == "rp_one_s":
+            name_suffix_adjusted = f"{self._name_suffix} (1s)"
+        # If it's a sum, add that too, unless already specific
+        if self._data_type_tag == "sum" and "Energy" not in self._name_suffix: # Energy already implies sum
+             name_suffix_adjusted = f"{name_suffix_adjusted} Sum"
+
+
+        self._value_key_for_unique_id = f"{self._base_value_key}{key_suffix}"
+        
+        self.entity_id = f"sensor.{DOMAIN}_{current_device_props.get('nodeId', '').replace('-', '_')}_{self._value_key_for_unique_id}".lower()
+        self._attr_name = f"{device_name_prefix} {name_suffix_adjusted}"
+        self._attr_unique_id = f"{current_device_props.get('nodeId')}_{self._value_key_for_unique_id}"
 
         self._update_internal_state() # Initial update
 
@@ -320,109 +377,130 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
     @property
     def native_value(self) -> Any:
         """Return the state of the sensor."""
-        # For sensors based on `properties.info`, the value is static once read.
-        # For sensors based on measurements, it comes from the coordinator.
-        # The self._attr_native_value is updated by _handle_coordinator_update or initially.
         return self._attr_native_value
+
+    def _get_sensor_value_from_latest_data(self, latest_data: Dict[str, Any], base_key: str, rp_tag: Optional[str], data_type: str) -> Any:
+        """Helper to extract a specific value from the _latest_data structure."""
+        if not latest_data or not isinstance(latest_data, dict):
+            return None
+        
+        field_data = latest_data.get(base_key)
+        if not field_data or not isinstance(field_data, dict):
+            # Fallback for old structure or direct values (e.g. if API changes or for simpler sensors)
+            if rp_tag is None and data_type == "latest": # Assuming direct value if no RP tag
+                return field_data 
+            return None
+
+        if rp_tag: # rp_one_m or rp_one_s
+            return field_data.get(f"{rp_tag}_{data_type}")
+        else: # Should not happen if rp_tag is expected, but as a fallback for non-rp specific latest/sum
+            return field_data.get(data_type)
+
 
     def _update_internal_state(self) -> None:
         """Update the internal state of the sensor from the current device data."""
         current_device_data_for_sensor = self._get_current_device_data_from_coordinator()
         if current_device_data_for_sensor is None:
             self._attr_native_value = None
-            _LOGGER.debug("Sensor %s: No current data from coordinator.", self.unique_id)
+            # _LOGGER.debug("Sensor %s: No current data from coordinator.", self.unique_id) # Reduced verbosity
             return
 
-        latest_data = current_device_data_for_sensor.get("_latest_data", {})
-        current_properties = current_device_data_for_sensor.get("properties", {}) # Get current properties
+        latest_data_source = current_device_data_for_sensor.get("_latest_data", {})
+        current_properties = current_device_data_for_sensor.get("properties", {})
 
-        # Custom logic for import/export power sensors
-        if self._value_key == "import_power":
-            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+        # For static info sensors
+        if self._is_info_sensor:
+            self._attr_native_value = get_value_from_info(current_device_data_for_sensor, self._base_value_key)
+            # _LOGGER.debug("Sensor %s (info) updated native_value to: %s", self.unique_id, self._attr_native_value)
+            return
+
+        # --- Special Handling for specific sensor types ---
+        # These might need to combine data or look at specific children.
+        # Default retention policy for these specific hardcoded sensors will be rp_one_m latest unless specified.
+        # This part needs careful review if rp_one_s versions of these specific sensors are needed.
+
+        # Import/Export Power (typically uses rp_one_m latest of actualPowerTot_W)
+        if self._base_value_key == "import_power": # This is a derived sensor name, not a direct API key
+            # Assumes 'actualPowerTot_W' is the source and we use 'rp_one_m_latest' by default for this logic
+            value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest")
             self._attr_native_value = value if value is not None and value > 0 else 0
-        elif self._value_key == "export_power":
-            value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
+        elif self._base_value_key == "export_power": # Derived sensor name
+            value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest")
             self._attr_native_value = abs(value) if value is not None and value < 0 else 0
         
-        # Custom logic for battery/hybrid inverter charging/discharging power
-        elif self._value_key in ("charging_power", "discharging_power"):
-            node_type_of_current_device = current_properties.get("nodeType") # Use current nodeType
+        # Charging/Discharging Power (derived, complex logic)
+        elif self._base_value_key in ("charging_power", "discharging_power"):
+            node_type_of_current_device = current_properties.get("nodeType")
+            total_power = 0
+            processed_children = current_device_data_for_sensor.get("_processed_children", [])
 
             if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
-                total_power = 0
-                # Access _processed_children from the *updated* data block of the hybrid inverter
-                # Ensure coordinator updates _latest_data within these child blocks too.
-                for child_block in current_device_data_for_sensor.get("_processed_children", []): # Use fresh children list
+                for child_block in processed_children:
                     if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
-                        battery_latest_data = child_block.get("_latest_data", {}) # Get latest_data from the fresh child_block
-                        value = battery_latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(battery_latest_data.get("actualPowerTot_W"), dict) else battery_latest_data.get("actualPowerTot_W")
+                        battery_latest_data = child_block.get("_latest_data", {})
+                        # Defaulting to rp_one_m for battery contribution to hybrid inverter's charge/discharge
+                        value = self._get_sensor_value_from_latest_data(battery_latest_data, "actualPowerTot_W", "rp_one_m", "latest")
                         if value is not None:
                             total_power += value
-                
-                if self._value_key == "charging_power":
-                    self._attr_native_value = total_power if total_power > 0 else 0
-                else:  # discharging_power
-                    self._attr_native_value = abs(total_power) if total_power < 0 else 0
-            
-            elif node_type_of_current_device == DEVICE_TYPE_BATTERY: # Standalone battery
-                # This logic relies on current_device_data_for_sensor being the standalone battery's data
-                value = latest_data.get("actualPowerTot_W", {}).get("latest") if isinstance(latest_data.get("actualPowerTot_W"), dict) else latest_data.get("actualPowerTot_W")
-                if self._value_key == "charging_power":
-                    self._attr_native_value = value if value is not None and value > 0 else 0
-                else:  # discharging_power
-                    self._attr_native_value = abs(value) if value is not None and value < 0 else 0
-            else:
-                self._attr_native_value = None
+            elif node_type_of_current_device == DEVICE_TYPE_BATTERY:
+                # Defaulting to rp_one_m for standalone battery's charge/discharge
+                value = self._get_sensor_value_from_latest_data(latest_data_source, "actualPowerTot_W", "rp_one_m", "latest")
+                if value is not None:
+                     total_power = value # total_power is just this battery's power
+
+            if self._base_value_key == "charging_power":
+                self._attr_native_value = total_power if total_power > 0 else 0
+            else:  # discharging_power
+                self._attr_native_value = abs(total_power) if total_power < 0 else 0
         
-        # For state of charge, scale from 0-1 to 0-100
-        elif self._value_key == "stateOfCharge_frac":
-            node_type_of_current_device = current_properties.get("nodeType") # Use current nodeType
+        # State of Charge (derived, complex logic)
+        elif self._base_value_key == "stateOfCharge_frac":
+            node_type_of_current_device = current_properties.get("nodeType")
+            soc_value = None
+            processed_children = current_device_data_for_sensor.get("_processed_children", [])
 
             if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
-                # Retrieve state of charge from child battery using current data
-                self._attr_native_value = None # Default if no battery child found or no value
-                for child_block in current_device_data_for_sensor.get("_processed_children", []): # Use fresh children list
+                for child_block in processed_children:
                     if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
-                        battery_latest_data = child_block.get("_latest_data", {}) # Get latest_data from fresh child_block
-                        value = battery_latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(battery_latest_data.get("stateOfCharge_frac"), dict) else battery_latest_data.get("stateOfCharge_frac")
+                        battery_latest_data = child_block.get("_latest_data", {})
+                        # Defaulting to rp_one_m for battery SoC contribution
+                        value = self._get_sensor_value_from_latest_data(battery_latest_data, "stateOfCharge_frac", "rp_one_m", "latest")
                         if value is not None:
-                            self._attr_native_value = value * 100
+                            soc_value = value * 100
                             break 
             else: # Assumed to be a standalone battery or a direct child battery sensor
-                value = latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(latest_data.get("stateOfCharge_frac"), dict) else latest_data.get("stateOfCharge_frac")
-                self._attr_native_value = value * 100 if value is not None else None
-        
-        # For energy delta fields, use the 'sum' value
-        elif self._value_key.endswith("EnergyDeltaTot_Wh") or self._value_key.endswith("chargedEnergyDeltaTot_Wh") or self._value_key.endswith("dischargedEnergyDeltaTot_Wh"):
-            value = latest_data.get(self._value_key, {}).get("sum") if isinstance(latest_data.get(self._value_key), dict) else None
-            self._attr_native_value = value
-        
-        # For all other fields, use the 'latest' value if available
+                # Defaulting to rp_one_m for standalone/child battery SoC
+                value = self._get_sensor_value_from_latest_data(latest_data_source, "stateOfCharge_frac", "rp_one_m", "latest")
+                if value is not None:
+                    soc_value = value * 100
+            self._attr_native_value = soc_value
+
+        # --- Generic Handling for telemetry data based on retention_policy_tag and data_type_tag ---
         else:
-            # This handles sensors where value_extractor was get_value_from_conceptual_measurements
-            # and those where is_info_sensor is True (value_extractor=get_value_from_info)
-            # For conceptual (live) measurements:
-            if not self._is_info_sensor and self._value_extractor == get_value_from_conceptual_measurements:
-                 # The original logic for conceptual measurements expected the value extractor to get the value
-                 # However, the current structure relies on _latest_data for most live values.
-                 # If get_value_from_conceptual_measurements is just a placeholder returning None,
-                 # we should ensure the value is actually sourced from latest_data if available there.
-                 value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
-                 self._attr_native_value = value
-            elif self._is_info_sensor: # Static info sensor
-                 # Value extractor for info sensors is get_value_from_info
-                 # This is usually called once at init or if data structure allows updates to info.
-                 # For safety, re-evaluate if needed, though info is typically static.
-                 self._attr_native_value = self._value_extractor(current_device_data_for_sensor, self._value_key)
+            # This handles all sensors derived from CONCEPTUAL_MEASUREMENT_SENSORS
+            # where self._retention_policy_tag and self._data_type_tag are set.
+            if self._retention_policy_tag and self._data_type_tag:
+                self._attr_native_value = self._get_sensor_value_from_latest_data(
+                    latest_data_source,
+                    self._base_value_key,
+                    self._retention_policy_tag,
+                    self._data_type_tag
+                )
             else:
-                 # Fallback for other non-info, non-special-case sensors that might exist or future ones
-                 value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
-                 self._attr_native_value = value
+                # Fallback for sensors not covered by above, or if tags are missing (should ideally not happen for telemetry)
+                # This might pick up older direct values if API structure was simpler previously for some keys
+                raw_value = latest_data_source.get(self._base_value_key)
+                if isinstance(raw_value, dict): # If it's a dict, it's likely the new structure, but we lack tags
+                    _LOGGER.warning(
+                        "Sensor %s (%s) is trying to access telemetry data but lacks specific retention/data type tags. Check setup.",
+                        self.unique_id, self._base_value_key
+                    )
+                    self._attr_native_value = None # Avoid picking ambiguous data
+                else: # Assume it's a direct value (old structure or simple non-timeseries data)
+                     self._attr_native_value = raw_value
 
 
-        _LOGGER.debug("Sensor %s updated native_value to: %s", 
-                      self.unique_id, 
-                      self._attr_native_value)
+        # _LOGGER.debug("Sensor %s updated native_value to: %s", self.unique_id, self._attr_native_value) # Reduced verbosity
 
 
     @callback
