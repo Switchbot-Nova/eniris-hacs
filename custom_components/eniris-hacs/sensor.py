@@ -75,14 +75,18 @@ BATTERY_CHARGE_DISCHARGE_SENSORS = [
 CONCEPTUAL_MEASUREMENT_SENSORS = {
     DEVICE_TYPE_HYBRID_INVERTER: [
         ("actualPowerTot_W", "Total Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:solar-power", None),
+        ("actualPowerTot_W", "Realtime Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:solar-power", None),
         ("exportedEnergyDeltaTot_Wh", "Exported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-export", None),
         ("importedEnergyDeltaTot_Wh", "Imported Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:transmission-tower-import", None),
         # New sensor for state of charge from child battery
         ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
+        ("stateOfCharge_frac", "Realtime State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
     ],
     DEVICE_TYPE_BATTERY: [
         ("stateOfCharge_frac", "State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
+        ("stateOfCharge_frac", "Realtime State of Charge", PERCENTAGE, SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, "mdi:battery", None),
         ("actualPowerTot_W", "Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-charging", None),
+        ("actualPowerTot_W", "Realtime Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "mdi:battery-charging", None),
         ("chargedEnergyDeltaTot_Wh", "Charged Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:battery-charging", None),
         ("dischargedEnergyDeltaTot_Wh", "Discharged Energy", UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "mdi:battery-discharging", None),
     ],
@@ -143,17 +147,17 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensor entities from a config entry."""
     coordinator_data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: DataUpdateCoordinator = coordinator_data["coordinator"]
-    # api_client: EnirisHacsApiClient = coordinator_data["api_client"] # If needed for direct calls
+    regular_coordinator = coordinator_data["coordinator"]
+    realtime_coordinator = coordinator_data["realtime_coordinator"]
 
     entities_to_add: List[EnirisHacsSensor] = []
 
     # The coordinator.data should be the processed_devices dictionary
-    if not coordinator.data:
+    if not regular_coordinator.data:
         _LOGGER.warning("No data from coordinator, cannot set up sensors.")
         return
 
-    for node_id, device_data in coordinator.data.items():
+    for node_id, device_data in regular_coordinator.data.items():
         properties = device_data.get("properties", {})
         node_type = properties.get("nodeType")
         device_info_block = properties.get("info", {})
@@ -164,7 +168,7 @@ async def async_setup_entry(
             if get_value_from_info(device_data, key) is not None:
                 entities_to_add.append(
                     EnirisHacsSensor(
-                        coordinator,
+                        regular_coordinator,
                         device_data, # Primary device data
                         entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
                         value_extractor=get_value_from_info,
@@ -177,7 +181,7 @@ async def async_setup_entry(
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in IMPORT_EXPORT_POWER_SENSORS:
                 entities_to_add.append(
                     EnirisHacsSensor(
-                        coordinator,
+                        regular_coordinator,
                         device_data,
                         entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
                         value_extractor=None # We'll handle in the sensor class
@@ -189,7 +193,7 @@ async def async_setup_entry(
                 for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
                     entities_to_add.append(
                         EnirisHacsSensor(
-                            coordinator,
+                            regular_coordinator,
                             device_data,  # Parent is inverter, but value comes from children
                             entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
                             value_extractor=None
@@ -199,7 +203,7 @@ async def async_setup_entry(
                 for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in BATTERY_CHARGE_DISCHARGE_SENSORS:
                     entities_to_add.append(
                         EnirisHacsSensor(
-                            coordinator,
+                            regular_coordinator,
                             device_data,
                             entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
                             value_extractor=None
@@ -209,6 +213,10 @@ async def async_setup_entry(
         # 2. Add sensors based on conceptual measurements for the primary device
         if node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
             for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[node_type]:
+                # Determine if this is a real-time sensor
+                is_realtime = m_key.endswith("_realtime")
+                coordinator = realtime_coordinator if is_realtime else regular_coordinator
+                
                 entities_to_add.append(
                     EnirisHacsSensor(
                         coordinator,
@@ -229,7 +237,7 @@ async def async_setup_entry(
             for key, name_suffix, unit, dev_class, state_class, icon, ent_cat in SENSOR_DESCRIPTIONS_COMMON:
                 entities_to_add.append(
                     EnirisHacsSensor(
-                        coordinator,
+                        regular_coordinator,
                         device_data, # Parent device data for HA device linking
                         child_device_data=child_device_data, # Actual data source for this sensor
                         entity_description_tuple=(key, name_suffix, unit, dev_class, state_class, icon, ent_cat),
@@ -240,6 +248,10 @@ async def async_setup_entry(
             # 3b. Conceptual measurement sensors for the child device
             if child_node_type in CONCEPTUAL_MEASUREMENT_SENSORS:
                 for m_key, name_suffix, unit, dev_class, state_class, icon, ent_cat in CONCEPTUAL_MEASUREMENT_SENSORS[child_node_type]:
+                    # Determine if this is a real-time sensor
+                    is_realtime = m_key.endswith("_realtime")
+                    coordinator = realtime_coordinator if is_realtime else regular_coordinator
+                    
                     entities_to_add.append(
                         EnirisHacsSensor(
                             coordinator,
@@ -377,6 +389,7 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         # For state of charge, scale from 0-1 to 0-100
         elif self._value_key == "stateOfCharge_frac":
             node_type_of_current_device = current_properties.get("nodeType") # Use current nodeType
+            is_realtime = self._name_suffix.startswith("Realtime")
 
             if node_type_of_current_device == DEVICE_TYPE_HYBRID_INVERTER:
                 # Retrieve state of charge from child battery using current data
@@ -384,12 +397,12 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
                 for child_block in current_device_data_for_sensor.get("_processed_children", []): # Use fresh children list
                     if child_block.get("properties", {}).get("nodeType") == DEVICE_TYPE_BATTERY:
                         battery_latest_data = child_block.get("_latest_data", {}) # Get latest_data from fresh child_block
-                        value = battery_latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(battery_latest_data.get("stateOfCharge_frac"), dict) else battery_latest_data.get("stateOfCharge_frac")
+                        value = battery_latest_data.get("stateOfCharge_frac", {}).get("latest_realtime" if is_realtime else "latest") if isinstance(battery_latest_data.get("stateOfCharge_frac"), dict) else battery_latest_data.get("stateOfCharge_frac")
                         if value is not None:
                             self._attr_native_value = value * 100
                             break 
             else: # Assumed to be a standalone battery or a direct child battery sensor
-                value = latest_data.get("stateOfCharge_frac", {}).get("latest") if isinstance(latest_data.get("stateOfCharge_frac"), dict) else latest_data.get("stateOfCharge_frac")
+                value = latest_data.get("stateOfCharge_frac", {}).get("latest_realtime" if is_realtime else "latest") if isinstance(latest_data.get("stateOfCharge_frac"), dict) else latest_data.get("stateOfCharge_frac")
                 self._attr_native_value = value * 100 if value is not None else None
         
         # For energy delta fields, use the 'sum' value
@@ -407,7 +420,8 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
                  # However, the current structure relies on _latest_data for most live values.
                  # If get_value_from_conceptual_measurements is just a placeholder returning None,
                  # we should ensure the value is actually sourced from latest_data if available there.
-                 value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
+                 is_realtime = self._name_suffix.startswith("Realtime")
+                 value = latest_data.get(self._value_key, {}).get("latest_realtime" if is_realtime else "latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
                  self._attr_native_value = value
             elif self._is_info_sensor: # Static info sensor
                  # Value extractor for info sensors is get_value_from_info
@@ -416,7 +430,8 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
                  self._attr_native_value = self._value_extractor(current_device_data_for_sensor, self._value_key)
             else:
                  # Fallback for other non-info, non-special-case sensors that might exist or future ones
-                 value = latest_data.get(self._value_key, {}).get("latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
+                 is_realtime = self._name_suffix.startswith("Realtime")
+                 value = latest_data.get(self._value_key, {}).get("latest_realtime" if is_realtime else "latest") if isinstance(latest_data.get(self._value_key), dict) else latest_data.get(self._value_key)
                  self._attr_native_value = value
 
 

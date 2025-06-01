@@ -11,7 +11,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import EnirisHacsApiClient, EnirisHacsApiError, EnirisHacsAuthError
-from .const import DOMAIN, SCAN_INTERVAL_SECONDS
+from .const import DOMAIN, SCAN_INTERVAL_SECONDS, REALTIME_SCAN_INTERVAL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +53,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Unexpected error during data update: %s", err, exc_info=True)
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
-    coordinator = DataUpdateCoordinator(
+    # Create two coordinators: one for regular updates and one for real-time updates
+    regular_coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
         name=f"{DOMAIN} ({entry.title})",
@@ -61,13 +62,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=SCAN_INTERVAL_SECONDS),
     )
 
+    realtime_coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=f"{DOMAIN} Realtime ({entry.title})",
+        update_method=async_update_data,
+        update_interval=timedelta(seconds=REALTIME_SCAN_INTERVAL_SECONDS),
+    )
+
     # Fetch initial data so we have data when entities are set up.
     # If an error occurs, setup will fail.
-    await coordinator.async_config_entry_first_refresh()
+    await regular_coordinator.async_config_entry_first_refresh()
+    await realtime_coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = {
         "api_client": api_client, # Store if needed by platforms directly, though coordinator is preferred
-        "coordinator": coordinator,
+        "coordinator": regular_coordinator,
+        "realtime_coordinator": realtime_coordinator,
     }
 
     # Set up platforms

@@ -198,60 +198,62 @@ class EnirisHacsApiClient:
 
     async def get_device_telemetry(self, node_id: str, measurement: str, fields: List[str]) -> Dict[str, Any]:
         """Get telemetry data for a specific device."""
-        access_token = await self.ensure_access_token()
+        if not self._access_token:
+            await self._ensure_valid_token()
+
         headers = {
-            "Authorization": f"Bearer {access_token}",
+            "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json"
         }
 
-        # Get the last 5 minutes of data
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(minutes=5)
-
-        # Create queries for each field
+        # Prepare queries for both latest and sum values
         queries = []
         for field in fields:
-            # Query for the latest value
-            queries.append({
-                "select": [field],
-                "from": {
-                    "namespace": {
-                        "version": "1",
-                        "database": "beauvent",
-                        "retentionPolicy": "rp_one_m"
-                    },
-                    "measurement": measurement
+            # Query for latest value (rp_one_m)
+            latest_query = {
+                "measurement": measurement,
+                "fields": [field],
+                "tags": {"nodeId": node_id, "retentionPolicy": "rp_one_m"},
+                "timeRange": {
+                    "start": "-1h",  # Last hour of data
+                    "end": "now"
                 },
-                "where": {
-                    "time": [
-                        {"operator": ">=", "value": int(start_time.timestamp() * 1000)},
-                        {"operator": "<", "value": int(end_time.timestamp() * 1000)}
-                    ],
-                    "tags": {"nodeId": node_id}
+                "groupBy": ["*"],
+                "orderBy": ["time DESC"],
+                "limit": 1
+            }
+            queries.append(latest_query)
+
+            # Query for sum value (rp_one_m)
+            sum_query = {
+                "measurement": measurement,
+                "fields": [field],
+                "tags": {"nodeId": node_id, "retentionPolicy": "rp_one_m"},
+                "timeRange": {
+                    "start": "-1h",  # Last hour of data
+                    "end": "now"
                 },
+                "groupBy": ["*"],
+                "orderBy": ["time DESC"],
                 "limit": 1,
-                "orderBy": "DESC"
-            })
-            
-            # Query for the sum in the time range
-            queries.append({
-                "select": [{"field": field, "function": "sum"}],
-                "from": {
-                    "namespace": {
-                        "version": "1",
-                        "database": "beauvent",
-                        "retentionPolicy": "rp_one_m"
-                    },
-                    "measurement": measurement
+                "aggregation": "sum"
+            }
+            queries.append(sum_query)
+
+            # Additional query for real-time data (rp_one_s)
+            realtime_query = {
+                "measurement": measurement,
+                "fields": [field],
+                "tags": {"nodeId": node_id, "retentionPolicy": "rp_one_s"},
+                "timeRange": {
+                    "start": "-1m",  # Last minute of data
+                    "end": "now"
                 },
-                "where": {
-                    "time": [
-                        {"operator": ">=", "value": int(start_time.timestamp() * 1000)},
-                        {"operator": "<", "value": int(end_time.timestamp() * 1000)}
-                    ],
-                    "tags": {"nodeId": node_id}
-                }
-            })
+                "groupBy": ["*"],
+                "orderBy": ["time DESC"],
+                "limit": 1
+            }
+            queries.append(realtime_query)
 
         try:
             response = await self._request(
@@ -267,18 +269,19 @@ class EnirisHacsApiClient:
 
             result = {}
             latest_timestamp = None
+            realtime_timestamp = None
 
-            # Each field has two queries: one for latest, one for sum
-            # We'll process them in pairs
-            for i in range(0, len(response), 2):
+            # Process queries in groups of 3 (latest, sum, realtime)
+            for i in range(0, len(response), 3):
                 latest_stmt = response[i] if i < len(response) else None
                 sum_stmt = response[i+1] if i+1 < len(response) else None
-                field = fields[i//2] if i//2 < len(fields) else None
+                realtime_stmt = response[i+2] if i+2 < len(response) else None
+                field = fields[i//3] if i//3 < len(fields) else None
                 if not field:
                     continue
                 result[field] = {}
 
-                # Process latest value
+                # Process latest value (rp_one_m)
                 if latest_stmt and latest_stmt.get("series"):
                     for series in latest_stmt["series"]:
                         if not series.get("values"):
@@ -295,99 +298,116 @@ class EnirisHacsApiClient:
                                     # Save timestamp for latest value
                                     if latest_timestamp is None or timestamp > latest_timestamp:
                                         latest_timestamp = timestamp
+
                 # Process sum value
                 if sum_stmt and sum_stmt.get("series"):
                     for series in sum_stmt["series"]:
                         if not series.get("values"):
                             continue
                         sum_value = series["values"][-1]
+                        # Get the column names
                         columns = series.get("columns", [])
                         for idx, value in enumerate(sum_value[1:], 1):
                             if idx < len(columns):
                                 field_name = columns[idx]
-                                if field_name.startswith("sum_"):
-                                    field_name = field_name[4:]
                                 if field_name == field:
                                     result[field]["sum"] = value
 
-            # Add the timestamp in UTC
-            if latest_timestamp:
-                if isinstance(latest_timestamp, int):
-                    result["timestamp"] = datetime.fromtimestamp(latest_timestamp / 1000, timezone.utc)
-                elif isinstance(latest_timestamp, str):
-                    ts = latest_timestamp.rstrip('Z')
-                    try:
-                        result["timestamp"] = datetime.fromisoformat(ts)
-                    except Exception:
-                        result["timestamp"] = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+                # Process realtime value (rp_one_s)
+                if realtime_stmt and realtime_stmt.get("series"):
+                    for series in realtime_stmt["series"]:
+                        if not series.get("values"):
+                            continue
+                        realtime_value = series["values"][-1]
+                        timestamp = realtime_value[0]
+                        # Get the column names
+                        columns = series.get("columns", [])
+                        for idx, value in enumerate(realtime_value[1:], 1):
+                            if idx < len(columns):
+                                field_name = columns[idx]
+                                if field_name == field:
+                                    result[field]["latest_realtime"] = value
+                                    # Save timestamp for realtime value
+                                    if realtime_timestamp is None or timestamp > realtime_timestamp:
+                                        realtime_timestamp = timestamp
 
-            _LOGGER.debug("Telemetry data for device %s: %s", node_id, result)
             return result
 
-        except EnirisHacsApiError as e:
-            _LOGGER.error("Error fetching telemetry data for device %s: %s", node_id, e)
-            # If it's an auth error, it might mean the access token expired mid-flight.
-            # Retry getting an access token once.
-            if isinstance(e, EnirisHacsAuthError):
-                _LOGGER.info("Auth error during telemetry fetch, attempting to refresh access token once.")
-                self._access_token = None  # Clear current access token to force refresh
-                access_token = await self.ensure_access_token()  # Retry getting token
-                headers = {
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json"
-                }
-                # Retry fetching telemetry once
-                try:
-                    response = await self._request(
-                        "POST",
-                        "https://api.eniris.be/v1/telemetry/query",
-                        headers=headers,
-                        data=queries
-                    )
-                    if response and isinstance(response, list) and len(response) > 0:
-                        _LOGGER.info("Successfully fetched telemetry data on retry for device %s", node_id)
-                        # Process the response as before
-                        result = {}
-                        latest_timestamp = None
-                        for i in range(0, len(response), 2):
-                            latest_stmt = response[i] if i < len(response) else None
-                            sum_stmt = response[i+1] if i+1 < len(response) else None
-                            field = fields[i//2] if i//2 < len(fields) else None
-                            if not field:
-                                continue
-                            result[field] = {}
+        except EnirisHacsApiError as err:
+            _LOGGER.error("API error getting telemetry for device %s: %s", node_id, err)
+            # Try one more time with token refresh
+            try:
+                await self._ensure_valid_token(force_refresh=True)
+                headers["Authorization"] = f"Bearer {self._access_token}"
+                response = await self._request(
+                    "POST",
+                    "https://api.eniris.be/v1/telemetry/query",
+                    headers=headers,
+                    data=queries
+                )
+                if response and isinstance(response, list) and len(response) > 0:
+                    _LOGGER.info("Successfully fetched telemetry data on retry for device %s", node_id)
+                    # Process the response as before
+                    result = {}
+                    latest_timestamp = None
+                    realtime_timestamp = None
+                    for i in range(0, len(response), 3):
+                        latest_stmt = response[i] if i < len(response) else None
+                        sum_stmt = response[i+1] if i+1 < len(response) else None
+                        realtime_stmt = response[i+2] if i+2 < len(response) else None
+                        field = fields[i//3] if i//3 < len(fields) else None
+                        if not field:
+                            continue
+                        result[field] = {}
 
-                            # Process latest value
-                            if latest_stmt and latest_stmt.get("series"):
-                                for series in latest_stmt["series"]:
-                                    if not series.get("values"):
-                                        continue
-                                    latest_value = series["values"][-1]
-                                    timestamp = latest_value[0]
-                                    # Get the column names
-                                    columns = series.get("columns", [])
-                                    for idx, value in enumerate(latest_value[1:], 1):
-                                        if idx < len(columns):
-                                            field_name = columns[idx]
-                                            if field_name == field:
-                                                result[field]["latest"] = value
-                                                # Save timestamp for latest value
-                                                if latest_timestamp is None or timestamp > latest_timestamp:
-                                                    latest_timestamp = timestamp
-                            # Process sum value
-                            if sum_stmt and sum_stmt.get("series"):
-                                for series in sum_stmt["series"]:
-                                    if not series.get("values"):
-                                        continue
-                                    sum_value = series["values"][-1]
-                                    columns = series.get("columns", [])
-                                    for idx, value in enumerate(sum_value[1:], 1):
-                                        if idx < len(columns):
-                                            field_name = columns[idx]
-                                            if field_name.startswith("sum_"):
-                                                field_name = field_name[4:]
-                                            if field_name == field:
-                                                result[field]["sum"] = value
+                        # Process latest value (rp_one_m)
+                        if latest_stmt and latest_stmt.get("series"):
+                            for series in latest_stmt["series"]:
+                                if not series.get("values"):
+                                    continue
+                                latest_value = series["values"][-1]
+                                timestamp = latest_value[0]
+                                # Get the column names
+                                columns = series.get("columns", [])
+                                for idx, value in enumerate(latest_value[1:], 1):
+                                    if idx < len(columns):
+                                        field_name = columns[idx]
+                                        if field_name == field:
+                                            result[field]["latest"] = value
+                                            # Save timestamp for latest value
+                                            if latest_timestamp is None or timestamp > latest_timestamp:
+                                                latest_timestamp = timestamp
+                        # Process sum value
+                        if sum_stmt and sum_stmt.get("series"):
+                            for series in sum_stmt["series"]:
+                                if not series.get("values"):
+                                    continue
+                                sum_value = series["values"][-1]
+                                columns = series.get("columns", [])
+                                for idx, value in enumerate(sum_value[1:], 1):
+                                    if idx < len(columns):
+                                        field_name = columns[idx]
+                                        if field_name.startswith("sum_"):
+                                            field_name = field_name[4:]
+                                        if field_name == field:
+                                            result[field]["sum"] = value
+                        # Process realtime value (rp_one_s)
+                        if realtime_stmt and realtime_stmt.get("series"):
+                            for series in realtime_stmt["series"]:
+                                if not series.get("values"):
+                                    continue
+                                realtime_value = series["values"][-1]
+                                timestamp = realtime_value[0]
+                                # Get the column names
+                                columns = series.get("columns", [])
+                                for idx, value in enumerate(realtime_value[1:], 1):
+                                    if idx < len(columns):
+                                        field_name = columns[idx]
+                                        if field_name == field:
+                                            result[field]["latest_realtime"] = value
+                                            # Save timestamp for realtime value
+                                            if realtime_timestamp is None or timestamp > realtime_timestamp:
+                                                realtime_timestamp = timestamp
                         if latest_timestamp:
                             # Handle both integer (Unix ms) and ISO8601 string
                             if isinstance(latest_timestamp, int):
@@ -399,8 +419,8 @@ class EnirisHacsApiClient:
                                 except Exception:
                                     result["timestamp"] = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
                         return result
-                except Exception as retry_error:
-                    _LOGGER.error("Still failed to fetch telemetry after token refresh: %s", retry_error)
+            except Exception as retry_error:
+                _LOGGER.error("Still failed to fetch telemetry after token refresh: %s", retry_error)
             return {}
 
     async def get_device_latest_data(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
