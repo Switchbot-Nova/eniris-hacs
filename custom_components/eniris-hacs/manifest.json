@@ -1,5 +1,5 @@
 {
-    "domain": "eniris-hacs",
+    "domain": "eniris_hacs",
     "name": "Eniris HACS",
     "documentation": "https://github.com/Switchbot-Nova/eniris-hacs",
     "issue_tracker": "https://github.com/Switchbot-Nova/eniris-hacs/issues",
