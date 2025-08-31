@@ -1,7 +1,7 @@
 """Constants for the Eniris HACS integration."""
 
 # Domain for the integration
-DOMAIN = "eniris-hacs"
+DOMAIN = "eniris_hacs"
 
 # Configuration keys
 CONF_EMAIL = "email"
