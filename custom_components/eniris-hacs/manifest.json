@@ -11,5 +11,6 @@
     "dependencies": [],
     "loggers": ["custom_components.eniris_hacs"],
     "logo": "logo.png"
+    "integration_type": "hub"
 }
   
