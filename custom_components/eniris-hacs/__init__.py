@@ -29,8 +29,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
     api_client = EnirisHacsApiClient(email, password, session)
 
-    async def async_update_data():
-        """Fetch data from API endpoint.
+    async def async_update_data() -> dict:
+        """
+        Fetch data from API endpoint.
 
         This is the place to pre-process data to limit Home Assistant
         processing calls.
@@ -38,20 +39,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             # Note: get_processed_devices already handles token refresh internally
             devices = await api_client.get_processed_devices()
-            _LOGGER.debug("Coordinator update: %s devices processed", len(devices))
-            return devices
         except EnirisHacsAuthError as err:
             # This will trigger re-authentication flow if implemented,
             # or just log an error and fail the update.
-            _LOGGER.error("Authentication error during data update: %s", err)
+            _LOGGER.exception("Authentication error during data update")
             # Re-raising UpdateFailed is important for the coordinator
-            raise UpdateFailed(f"Authentication error: {err}") from err
+            msg = f"Authentication error: {err}"
+            raise UpdateFailed(msg) from err
         except EnirisHacsApiError as err:
-            _LOGGER.error("API error during data update: %s", err)
-            raise UpdateFailed(f"API error: {err}") from err
+            _LOGGER.exception("API error during data update")
+            msg = f"API error: {err}"
+            raise UpdateFailed(msg) from err
         except Exception as err:
-            _LOGGER.error("Unexpected error during data update: %s", err, exc_info=True)
-            raise UpdateFailed(f"Unexpected error: {err}") from err
+            _LOGGER.exception("Unexpected error during data update")
+            msg = f"Unexpected error: {err}"
+            raise UpdateFailed(msg) from err
+        else:
+            return devices
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -66,7 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = {
-        "api_client": api_client, # Store if needed by platforms directly, though coordinator is preferred
+        "api_client": api_client,  # Store if needed by platforms directly, though coordinator is preferred
         "coordinator": coordinator,
     }
 
@@ -84,7 +88,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         api_client = hass.data[DOMAIN][entry.entry_id].get("api_client")
         if api_client:
-            await api_client.close() # Close the aiohttp session
+            await api_client.close()
         hass.data[DOMAIN].pop(entry.entry_id)
         _LOGGER.info("Eniris HACS integration unloaded for %s", entry.title)
 

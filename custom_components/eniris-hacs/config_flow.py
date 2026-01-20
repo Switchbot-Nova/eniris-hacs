@@ -1,17 +1,14 @@
 """Config flow for Eniris HACS integration."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import voluptuous as vol
-from aiohttp import ClientSession
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import EnirisHacsApiClient, EnirisHacsAuthError, EnirisHacsApiError
+from .api import EnirisHacsApiClient, EnirisHacsApiError, EnirisHacsAuthError
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,7 +27,7 @@ class EnirisHacsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
-    async def _test_credentials(self, user_input: Dict[str, Any]) -> Optional[str]:
+    async def _test_credentials(self, user_input: dict[str, Any]) -> str | None:
         """Test credentials against the API."""
         session = async_get_clientsession(self.hass)
         client = EnirisHacsApiClient(
@@ -45,17 +42,18 @@ class EnirisHacsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except EnirisHacsAuthError:
             return "invalid_auth"
         except EnirisHacsApiError:
-            return "cannot_connect" # More generic API error
-        except Exception as e: # Catch any other unexpected errors
-            _LOGGER.error("Unexpected error during credential test: %s", e, exc_info=True)
+            return "cannot_connect"  # More generic API error
+        except Exception as e:  # Catch any other unexpected errors
+            _LOGGER.error(
+                "Unexpected error during credential test: %s", e, exc_info=True
+            )
             return "unknown"
 
-
     async def async_step_user(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
-        errors: Dict[str, str] = {}
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             # Prevent duplicate entries for the same email
@@ -71,9 +69,8 @@ class EnirisHacsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=user_input[CONF_EMAIL], data=user_input
                 )
-            else:
-                errors["base"] = error_code
-        
+            errors["base"] = error_code
+
         return self.async_show_form(
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
         )
