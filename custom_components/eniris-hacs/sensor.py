@@ -340,6 +340,9 @@ class EnirisHacsSensor(EnirisHacsEntity, SensorEntity):
         self._attr_name = f"{device_name_prefix} {name_suffix_adjusted}"
         self._attr_unique_id = f"{current_device_props.get('nodeId')}_{self._value_key_for_unique_id}"
 
+        # Ensure the internal native value is defined before the first update cycle.
+        self._attr_native_value = None
+
         self._update_internal_state() # Initial update
 
     @property
