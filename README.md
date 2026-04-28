@@ -1,4 +1,6 @@
-# ⚠️ Warning: Community Integration – Not Officially Supported by Eniris
+# ⚠️ DEPRECATED!!! Please check the new repo https://github.com/Siebe-Uy/eniris-ha
+
+## Warning: Community Integration – Not Officially Supported by Eniris
 
 This integration is open-source and **not part of official Eniris support**. If you need help, please [create an issue on GitHub](https://github.com/Switchbot-Nova/eniris-hacs/issues). **Do not contact Eniris support for issues with this integration; tickets made at eniris.io will be closed without notice.**
 
